@@ -9,9 +9,7 @@
     - a block pool that maintains the blocks that FSM receives from the peers, and
     - the reactor, which may be completely chaotic.
     
- This specification focuses on the events that are received by the FSM from the reactor.
- The events that are emitted by the FSM are currently ignored.
- We may extend the spec in the future.
+ This specification focuses on the events that are received and produced by the FSM from the reactor.
 *)
 
 EXTENDS Integers, FiniteSets
@@ -22,18 +20,19 @@ EXTENDS Integers, FiniteSets
  *)
 None == -1          \* an undefined value
 PeerIDs == 0..2     \* potential peer ids
-maxHeight == 4      \* the maximum height
+maxHeight == 5      \* the maximum height
 Heights == 0..maxHeight \* potential heights
 NumRequests == 3    \* the number of requests made per batch
 
 \* basic stuff
 Min(a, b) == IF a < b THEN a ELSE b
 
-\* the state of the reactor: https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/blockchain/v1/reactor.go
-VARIABLES event                     \* an incoming event
-          
+\* the state of the reactor: 
+VARIABLES inEvent       \* an event from the reactor to the FSM
+                    
 \* the state of the FSM: https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/blockchain/v1/reactor_fsm.go
-VARIABLE state
+VARIABLE state,         \* an FSM state
+         outEvent       \* an event from the FSM to the reactor
 
 \* the block pool: https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/blockchain/v1/pool.go
 VARIABLE peers,         \* the set of active peers, not known to be faulty
@@ -56,39 +55,57 @@ Blocks == [ valid: BOOLEAN ]
 InvalidBlock == [ valid |-> FALSE]
 
 \* These are the types of input events that can be produced by the reactor to the FSM
-EventTypes == { "startFSMEv", "statusResponseEv", "blockResponseEvent", "stateTimeoutEv",
+InEventTypes == { "startFSMEv", "statusResponseEv", "blockResponseEv", "stateTimeoutEv",
                 "peerRemoveEv", "processedBlockEv", "makeRequestEv", "stopFSMEv" }
 
-\* These are all possible events that can be produced by the reactor.
+\* These are all possible events that can be produced by the reactor as the input to FSM.
 \* Mimicking a combination of bReactorEvent and bReactorEventData.
-Events ==
-    [ type: {"startFSMEv"} ]
+InEvents ==
+    [ type: {"startFSMEv", "stopFSMEv"} ]
     \cup
     [ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights]
     \cup
-    [ type: {"blockResponseEvent"}, peerID: PeerIDs, height: Heights, block: Blocks ]
+    [ type: {"blockResponseEv"}, peerID: PeerIDs, height: Heights, block: Blocks ]
     \cup
     [ type: {"stateTimeoutEv"}, stateName: States ]
     \cup
     [ type: {"peerRemoveEv"}, peerID: PeerIDs, err: BOOLEAN ]
     \cup
-    [ type: {"processedBlockEv"}, err: BOOLEAN ] 
+    [ type: {"processedBlockEv"}, err: BOOLEAN ]
     \cup
     [ type: {"makeRequestEv"}, maxNumRequests: {NumRequests} ]
+    
+\* These are the types of the output events that can be produced by the FSM to the reactor
+OutEventTypes == { "NoEvent", "sendStatusRequest", "sendBlockRequest",
+                   "sendPeerError", "resetStateTimer", "switchToConsensus" }
+                   
+\* These are all possible events that can be produced by the FSM to reactor.
+\* In contrast to the implementation, we group the requests together.
+OutEvents ==
+    [ type: {"NoEvent", "sendStatusRequest", "switchToConsensus"}]
     \cup
-    [ type: {"stopFSMEv"} ]
+    \* 
+    [ type: {"sendBlockRequest"}, reqs: [peerID: PeerIDs, height: Heights]]
+    \cup
+    [ type: {"sendPeerError"}, peerID: SUBSET PeerIDs] \* we omit the error field 
+    \cup
+    [ type: {"resetStateTimer"}] \* we omit the timer and timeout fields
+    
+NoEvent == [type |-> "NoEvent"]                       
 
-(* ------------------------------------------------------------------------------------------------*)
-(* The behavior of the reactor. In this specification, the reactor keeps generating events *)
-(* ------------------------------------------------------------------------------------------------*)
+(* ------------------------------------------------------------------------------------------------ *)
+(* The behavior of the reactor. In this specification, the reactor keeps generating events.         *)
+(* See reactor.go                                                                                   *)
+(* ------------------------------------------------------------------------------------------------ *)
 InitReactor ==
-    event = [type |-> "startFSMEv"]
+    inEvent = [type |-> "startFSMEv"]
     
 NextReactor ==
-    event' \in Events \* the reactor produces an arbitrary event
+    inEvent' \in InEvents \* the reactor produces an arbitrary input event to FSM
 
 (* ------------------------------------------------------------------------------------------------*)
 (* The behavior of the block pool, which keeps track of peers, block requests, and block responses *)
+(* See pool.go                                                                                     *)
 (* ------------------------------------------------------------------------------------------------*)
 NoPeers == peers = {}
 SomePeers == peers /= {}
@@ -114,21 +131,20 @@ IsPeerAtHeight(p, h) ==
     p \in peers /\ h \in DOMAIN blocks /\ p = blocks[h]
        
 \* A summary of InvalidateFirstTwoBlocks
-InvalidateFirstTwoBlocks ==
-    \E p1, p2 \in PeerIDs \cup {None}:
-        \* find the peers at height and height + 1, if possible
-        /\ \/ IsPeerAtHeight(p1, poolHeight)
-           \/ p1 = None /\ \A q \in PeerIDs: ~IsPeerAtHeight(q, poolHeight)
-        /\ \/ IsPeerAtHeight(p2, poolHeight + 1)
-           \/ p2 = None /\ \A q \in PeerIDs: ~IsPeerAtHeight(q, poolHeight + 1)
-        \* remove the peers (unless they are None)
-        /\ peers' = peers \ { p1, p2 }
-        \* keep the heights, as the height of the removed peer is ignored
-        /\ UNCHANGED peerHeights
-        \* the maximum height may lower
-        /\ UpdateMaxPeerHeight(peers', peerHeights)
-        \* adjust the height of the next request, if it has lowered
-        /\ nextRequestHeight' = Min(maxPeerHeight' + 1, nextRequestHeight)
+InvalidateFirstTwoBlocks(p1, p2) ==
+    \* find the peers at height and height + 1, if possible
+    /\ \/ IsPeerAtHeight(p1, poolHeight)
+       \/ p1 = None /\ \A q \in PeerIDs: ~IsPeerAtHeight(q, poolHeight)
+    /\ \/ IsPeerAtHeight(p2, poolHeight + 1)
+       \/ p2 = None /\ \A q \in PeerIDs: ~IsPeerAtHeight(q, poolHeight + 1)
+    \* remove the peers (unless they are None)
+    /\ peers' = peers \ { p1, p2 }
+    \* keep the heights, as the height of the removed peer is ignored
+    /\ UNCHANGED peerHeights
+    \* the maximum height may lower
+    /\ UpdateMaxPeerHeight(peers', peerHeights)
+    \* adjust the height of the next request, if it has lowered
+    /\ nextRequestHeight' = Min(maxPeerHeight' + 1, nextRequestHeight)
 
 \* Update the peer height (and add if it is not in the set)                    
 UpdatePeer(peerId, height) ==
@@ -148,11 +164,13 @@ UpdatePeer(peerId, height) ==
         RemovePeer(peerId)  \* may lower nextRequestHeight
 
 
-(* ------------------------------------------------------------------------------------------------*)
-(* The behavior of the fast-sync state machine *)
-(* ------------------------------------------------------------------------------------------------*)
+(* ------------------------------------------------------------------------------------------------ *)
+(* The behavior of the fast-sync state machine                                                      *)
+(* See reactor_fsm.go                                                                               *)
+(* ------------------------------------------------------------------------------------------------ *)
 InitFsm ==
     /\ state = "init"
+    /\ outEvent = NoEvent
     /\ peers = {}
     /\ poolHeight = 0
     /\ maxPeerHeight = 0
@@ -164,90 +182,103 @@ InitFsm ==
 \* when in state init
 InInit ==
     /\ state = "init"
-    /\ CASE event.type = "startFSMEv"
-             -> /\ state' = "waitForPeer"
-                /\ UNCHANGED poolVars
-                \* TODO: SendStatusRequest?
-         [] OTHER
-             -> UNCHANGED <<state, poolVars>> 
+    /\ \/ /\ inEvent.type = "startFSMEv"
+          /\ state' = "waitForPeer"
+          /\ outEvent' = [type |-> "sendStatusRequest"]
+          /\ UNCHANGED poolVars
+          
+       \/ /\ inEvent.type /= "startFSMEv"
+          /\ outEvent' = NoEvent
+          /\ UNCHANGED <<state, poolVars>>
 
 (* What happens in the state waitForPeer *)
 
 InWaitForPeer ==
     /\ state = "waitForPeer"
-    /\  CASE event.type = "statusResponseEv"
-             -> /\ UpdatePeer(event.peerID, event.height)
+    /\  CASE inEvent.type = "statusResponseEv"
+             -> /\ UpdatePeer(inEvent.peerID, inEvent.height)
                 /\ state' = IF SomePeers' THEN "waitForBlock" ELSE state
+                /\ outEvent' = NoEvent 
                 /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
                 \* TODO: StopTimer? 
                 
-          [] event.type = "stateTimeoutEv"
-             -> /\ state' = IF event.stateName = state THEN "finished" ELSE state
+          [] inEvent.type = "stateTimeoutEv"
+             -> /\ state' = IF inEvent.stateName = state THEN "finished" ELSE state
+                /\ outEvent' = NoEvent \* TODO: resetTimer instead? 
                 /\ UNCHANGED poolVars
-                \* TODO: StopTimer? 
              
-          [] event.type = "stopFSMEv"
+          [] inEvent.type = "stopFSMEv"
              -> /\ state' = "finished"
+                /\ outEvent' = NoEvent \* TODO: resetTimer instead? 
                 /\ UNCHANGED poolVars
-                \* TODO: StopTimer? 
              
           [] OTHER
-             -> UNCHANGED <<state, poolVars>>
+             -> UNCHANGED <<state, poolVars>> /\ outEvent' = NoEvent
 
 (* What happens in the state waitForBlock *)
 
 \* Produce requests for blocks. See pool.MakeNextRequests and pool.MakeRequestBatch     
 OnMakeRequestsInWaitForBlock ==
-    /\ state = "waitForBlock" /\ event.type = "makeRequestsEv"
-    /\ nextRequestHeight' = Min(event.numRequests - 1, maxPeerHeight) \* see pool.go:194-201
+    /\ state = "waitForBlock" /\ inEvent.type = "makeRequestsEv"
+    /\ nextRequestHeight' = Min(inEvent.numRequests - 1, maxPeerHeight) \* see pool.go:194-201
     /\ LET heights == 0..nextRequestHeight' IN
         \* pool.SendRequest(height)
         \* for each height h, assign a peer whose height is not lower than h
-        blocks' =
-          [h \in Heights |->
-            IF h \in heights
-            THEN CHOOSE p \in peers: peerHeights[p] >= h
-            ELSE InvalidBlock
-          ]
+        /\ blocks' =
+              [h \in Heights |->
+                IF h \in heights
+                THEN CHOOSE p \in peers: peerHeights[p] >= h
+                ELSE InvalidBlock
+              ]
+           \* group all block requests into one output event
+        /\ outEvent' = [type |-> "sendBlockRequest",
+                        reqs |-> { [peerID |-> blocks'[h],
+                                    height |-> h] : h \in heights }]
     \* TODO: the implementation requires !(peer.NumPendingBlockRequests >= maxRequestsPerPeer)
     \* TODO: the implementation may report errSendQueueFull
-    \* TODO: pool.toBcR.sendBlockRequest(peer.ID, height)
     \* TODO: peer.RequestSent(height)
     /\ state' = "waitForBlock"
     /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
              
 \* a peer responded with its height
 OnStatusResponseInWaitForBlock ==
-    /\ state = "waitForBlock" /\ event.type = "statusResponseEv"
-    /\ UpdatePeer(event.peerID, event.height)
+    /\ state = "waitForBlock" /\ inEvent.type = "statusResponseEv"
+    /\ UpdatePeer(inEvent.peerID, inEvent.height)
     /\ state' =
           IF poolHeight >= maxPeerHeight'
             THEN "finished"
             ELSE IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
+    /\ outEvent' = NoEvent
     /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
 
 \* a peer responded with a block
 OnBlockResponseInWaitForBlock ==
     /\ state = "waitForBlock"
-    /\ event.type = "blockResponseEv"
-    /\  IF (~event.block.valid \/ event.peerID /= blocks[event.height] \/ event.peerID \notin peers)
+    /\ inEvent.type = "blockResponseEv"
+    /\  IF (~inEvent.block.valid \/ inEvent.peerID /= blocks[inEvent.height] \/ inEvent.peerID \notin peers)
         \* A block was received that was unsolicited, from unexpected peer, or that we already have it
-        THEN RemovePeer(event.peerID)
+        THEN  /\ RemovePeer(inEvent.peerID)
+              /\ outEvent' = [type |-> "sendPeerError", peerIDs |-> {inEvent.peerID}]
         \* an OK block, the implementation adds it to the store
-        ELSE UNCHANGED <<peers, nextRequestHeight>>
+        ELSE  /\ outEvent' = NoEvent
+              /\ UNCHANGED <<peers, nextRequestHeight>>
     /\ state' = IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
     /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
 
 \* the block at the current height has been processed
 OnProcessedBlockInWaitForBlock ==
-    /\ state = "waitForBlock" /\ event.type = "processedBlockEv"
-    /\  IF event.err
+    /\ state = "waitForBlock" /\ inEvent.type = "processedBlockEv"
+    /\  IF inEvent.err
         THEN
-          /\ InvalidateFirstTwoBlocks
-          /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
+          \E p1, p2 \in PeerIDs \cup {None}:
+            /\ InvalidateFirstTwoBlocks(p1, p2)
+            /\ outEvent' = [ type |-> "sendPeerError",
+                             peerIDs |-> { p \in {p1, p2}: p /= None } ]
+            /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
         ELSE \* pool.ProcessedCurrentHeightBlock
           /\ blocks' = [blocks EXCEPT ![poolHeight] = None] \* remove the block at the pool height
           /\ poolHeight' = poolHeight + 1                   \* advance the pool height
+          /\ outEvent' = NoEvent
           /\ ghostProcessedHeights' = ghostProcessedHeights \cup {poolHeight} \* record the height
           /\ UNCHANGED <<peers, peerHeights, maxPeerHeight, nextRequestHeight>>
           \* pool.peers[peerID].RemoveBlock(pool.Height)
@@ -257,18 +288,19 @@ OnProcessedBlockInWaitForBlock ==
 
 \* a peer was disconnected or produced an error    
 OnPeerRemoveInWaitForBlock ==
-    /\ state = "waitForBlock" /\ event.type = "peerRemoveEv"
-    /\ RemovePeer(event.peerID)
+    /\ state = "waitForBlock" /\ inEvent.type = "peerRemoveEv"
+    /\ RemovePeer(inEvent.peerID)
     /\ state' =
           IF poolHeight >= maxPeerHeight'
             THEN "finished"
             ELSE IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
+    /\ outEvent' = NoEvent
     /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
 
 \* a timeout when waiting for a block
 OnStateTimeoutInWaitForBlock ==
-    /\ state = "waitForBlock" /\ event.type = "stateTimeoutEv"
-    /\ event.stateName = state
+    /\ state = "waitForBlock" /\ inEvent.type = "stateTimeoutEv"
+    /\ inEvent.stateName = state
     \* pool.RemovePeerAtCurrentHeights
     /\ \/ \E p \in peers:
           /\ IsPeerAtHeight(p, poolHeight)
@@ -282,6 +314,7 @@ OnStateTimeoutInWaitForBlock ==
                 /\ UNCHANGED <<maxPeerHeight, nextRequestHeight, peerHeights>> 
     \* resetStateTimer?
     /\ UNCHANGED <<peers, blocks, poolHeight, ghostProcessedHeights>>
+    /\ outEvent' = NoEvent
     /\ state' =
           IF poolHeight >= maxPeerHeight'
             THEN "finished"
@@ -289,8 +322,8 @@ OnStateTimeoutInWaitForBlock ==
     
 \* a stop event
 OnStopFSMInWaitForBlock ==
-    /\ state = "waitForBlock"
-    /\ state' = "finished"
+    /\ state = "waitForBlock" /\ state' = "finished"
+    /\ inEvent.type = "stopFSMEv" /\ outEvent' = NoEvent
     /\ UNCHANGED poolVars
     \* stateTimer.Stop() ?   
         
@@ -302,17 +335,19 @@ InWaitForBlock ==
     \/ OnProcessedBlockInWaitForBlock
     \/ OnPeerRemoveInWaitForBlock
     \/ OnStateTimeoutInWaitForBlock
-    \/ /\ state = "waitForBlock" /\ event.type = "stateTimeoutEv"
-       /\ event.stateName = state /\ UNCHANGED <<state, poolVars>>
+    \/ /\ state = "waitForBlock" /\ inEvent.type = "stateTimeoutEv"
+       /\ inEvent.stateName = state /\ outEvent' = NoEvent
+       /\ UNCHANGED <<state, poolVars>>
     \/ OnStopFSMInWaitForBlock
-    \/ /\ state = "waitForBlock" /\ event.type = "startFSMEv"
+    \/ /\ state = "waitForBlock" /\ inEvent.type = "startFSMEv"
+       /\ outEvent' = NoEvent
        /\ UNCHANGED <<state, poolVars>> 
 
 NextFsm ==
     \/ InInit
     \/ InWaitForPeer
     \/ InWaitForBlock
-    \/ UNCHANGED <<state, poolVars>>
+    \/ UNCHANGED <<state, poolVars, outEvent>>
 
 (* ------------------------------------------------------------------------------------------------*)
 (* The system is the composition of the non-deterministic reactor and the FSM *)
@@ -330,6 +365,31 @@ NeverFinishAtMax == [] (state = "finished" => poolHeight < maxHeight)
 \* This seems to be the safety requirement:
 \*   all blocks up to poolHeight have been processed 
 Safety == 0..poolHeight - 1 \subseteq ghostProcessedHeights
+
+\* before specifying liveness, we have to write constraints on the reactor events
+\* a good event
+GoodEvent ==
+    \* no timeouts, no peer removal
+    /\ inEvent.type \notin { "stateTimeoutEv", "peerRemoveEv" }
+    \* no invalid blocks
+    /\ inEvent.type = "blockResponseEv" => inEvent.block.valid
+    /\ inEvent.type = "processedBlockEv" => ~inEvent.err
+    
+\* the reactor can always kill progress by sending updates or useless messages
+NoSpam == inEvent.type \notin
+     { "statusResponseEv", "startFSMEv",
+       "stopFSMEv", "processedBlockEv", "makeRequestEv"}
+
+\* we cannot get a response for the same height infinitely often
+NoInfiniteResponse ==
+  \A h \in Heights:
+     [](inEvent.type = "blockResponseEv" /\ inEvent.height = h
+         => <>[](inEvent.type /= "blockResponseEv" \/ inEvent.height /= h))   
+    
+\* A liveness property that tells us that the protocol should terminate in the good case
+GoodTermination ==
+  ([]GoodEvent /\ <>[] NoSpam /\ NoInfiniteResponse)
+     => <>(state = "finished" /\ poolHeight = maxHeight)
 
 (* ------------------------------------------------------------------------------------------------*)
 (* Questions in the back of my head *)
@@ -349,5 +409,5 @@ Safety == 0..poolHeight - 1 \subseteq ghostProcessedHeights
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Jul 10 15:21:41 CEST 2019 by igor
+\* Last modified Wed Jul 10 20:19:16 CEST 2019 by igor
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
