@@ -9,7 +9,7 @@
     - a block pool that maintains the blocks that FSM receives from the peers, and
     - the reactor, which may be completely chaotic.
     
- This specification focuses on the events that are received by FSM from the reactor.
+ This specification focuses on the events that are received by the FSM from the reactor.
  The events that are emitted by the FSM are currently ignored.
  We may extend the spec in the future.
 *)
@@ -18,7 +18,7 @@ EXTENDS Integers, FiniteSets
 
 (*
  Constants that are introduced for model checking purposes.
- In the future, wa may want to introduce them as CONSTANTS.
+ In the future, we may want to introduce them as CONSTANTS.
  *)
 None == -1          \* an undefined value
 PeerIDs == 0..2     \* potential peer ids
@@ -41,11 +41,12 @@ VARIABLE peers,         \* the set of active peers, not known to be faulty
          blocks,        \* Height -> PeerID to collect the peers that have delivered the blocks
          poolHeight,    \* height of the next block to collect
          maxPeerHeight, \* maximum height of all peers
-         nextRequestHeight  \* the height at which the next request is going to be made
+         nextRequestHeight,     \* the height at which the next request is going to be made
+         ghostProcessedHeights   \* a ghost variable to collect the heights that have been processed successfully 
          \* the implementation contains plannedRequests that we omit here
          
 \* the variables of the block pool, to be used as UNCHANGED poolVars
-poolVars == <<peers, peerHeights, blocks, poolHeight, maxPeerHeight, nextRequestHeight>>
+poolVars == <<peers, peerHeights, blocks, poolHeight, maxPeerHeight, nextRequestHeight, ghostProcessedHeights>>
 
 (* The potential states of the FSM *)
 States == { "init", "waitForPeer", "waitForBlock", "finished" }
@@ -79,6 +80,7 @@ Events ==
 
 (* ------------------------------------------------------------------------------------------------*)
 (* The behavior of the reactor. In this specification, the reactor keeps generating events *)
+(* ------------------------------------------------------------------------------------------------*)
 InitReactor ==
     event = [type |-> "startFSMEv"]
     
@@ -87,6 +89,7 @@ NextReactor ==
 
 (* ------------------------------------------------------------------------------------------------*)
 (* The behavior of the block pool, which keeps track of peers, block requests, and block responses *)
+(* ------------------------------------------------------------------------------------------------*)
 NoPeers == peers = {}
 SomePeers == peers /= {}
 
@@ -113,12 +116,18 @@ IsPeerAtHeight(p, h) ==
 \* A summary of InvalidateFirstTwoBlocks
 InvalidateFirstTwoBlocks ==
     \E p1, p2 \in PeerIDs \cup {None}:
-        /\ IsPeerAtHeight(p1, poolHeight) \/ p1 = None
-        /\ IsPeerAtHeight(p2, poolHeight + 1) \/ p2 = None
-        /\ peers' = peers \ { p1, p2 }  \* remove the peers (unless they are None)
-        /\ UNCHANGED peerHeights        \* keep the heights, as the height of the removed peer is never used
-        /\ UpdateMaxPeerHeight(peers', peerHeights) \* the maximum height may lower
-           \* adjust the height of the next request, if it has lowered
+        \* find the peers at height and height + 1, if possible
+        /\ \/ IsPeerAtHeight(p1, poolHeight)
+           \/ p1 = None /\ \A q \in PeerIDs: ~IsPeerAtHeight(q, poolHeight)
+        /\ \/ IsPeerAtHeight(p2, poolHeight + 1)
+           \/ p2 = None /\ \A q \in PeerIDs: ~IsPeerAtHeight(q, poolHeight + 1)
+        \* remove the peers (unless they are None)
+        /\ peers' = peers \ { p1, p2 }
+        \* keep the heights, as the height of the removed peer is ignored
+        /\ UNCHANGED peerHeights
+        \* the maximum height may lower
+        /\ UpdateMaxPeerHeight(peers', peerHeights)
+        \* adjust the height of the next request, if it has lowered
         /\ nextRequestHeight' = Min(maxPeerHeight' + 1, nextRequestHeight)
 
 \* Update the peer height (and add if it is not in the set)                    
@@ -141,6 +150,7 @@ UpdatePeer(peerId, height) ==
 
 (* ------------------------------------------------------------------------------------------------*)
 (* The behavior of the fast-sync state machine *)
+(* ------------------------------------------------------------------------------------------------*)
 InitFsm ==
     /\ state = "init"
     /\ peers = {}
@@ -149,6 +159,7 @@ InitFsm ==
     /\ peerHeights = [ p \in PeerIDs |-> None ]     \* no peer height is known
     /\ blocks = [ h \in Heights |-> None ]          \* no peer has sent a block
     /\ nextRequestHeight = 0
+    /\ ghostProcessedHeights = {}
 
 \* when in state init
 InInit ==
@@ -167,7 +178,7 @@ InWaitForPeer ==
     /\  CASE event.type = "statusResponseEv"
              -> /\ UpdatePeer(event.peerID, event.height)
                 /\ state' = IF SomePeers' THEN "waitForBlock" ELSE state
-                /\ UNCHANGED <<poolHeight, blocks>>
+                /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
                 \* TODO: StopTimer? 
                 
           [] event.type = "stateTimeoutEv"
@@ -203,7 +214,7 @@ OnMakeRequestsInWaitForBlock ==
     \* TODO: pool.toBcR.sendBlockRequest(peer.ID, height)
     \* TODO: peer.RequestSent(height)
     /\ state' = "waitForBlock"
-    /\ UNCHANGED <<poolHeight, blocks>>
+    /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
              
 \* a peer responded with its height
 OnStatusResponseInWaitForBlock ==
@@ -213,7 +224,7 @@ OnStatusResponseInWaitForBlock ==
           IF poolHeight >= maxPeerHeight'
             THEN "finished"
             ELSE IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
-    /\ UNCHANGED <<poolHeight, blocks>>
+    /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
 
 \* a peer responded with a block
 OnBlockResponseInWaitForBlock ==
@@ -225,7 +236,7 @@ OnBlockResponseInWaitForBlock ==
         \* an OK block, the implementation adds it to the store
         ELSE UNCHANGED <<peers, nextRequestHeight>>
     /\ state' = IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
-    /\ UNCHANGED <<poolHeight, blocks>>
+    /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
 
 \* the block at the current height has been processed
 OnProcessedBlockInWaitForBlock ==
@@ -233,10 +244,11 @@ OnProcessedBlockInWaitForBlock ==
     /\  IF event.err
         THEN
           /\ InvalidateFirstTwoBlocks
-          /\ UNCHANGED <<poolHeight, blocks>>
+          /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
         ELSE \* pool.ProcessedCurrentHeightBlock
           /\ blocks' = [blocks EXCEPT ![poolHeight] = None] \* remove the block at the pool height
           /\ poolHeight' = poolHeight + 1                   \* advance the pool height
+          /\ ghostProcessedHeights' = ghostProcessedHeights \cup {poolHeight} \* record the height
           /\ UNCHANGED <<peers, peerHeights, maxPeerHeight, nextRequestHeight>>
           \* pool.peers[peerID].RemoveBlock(pool.Height)
             \* TODO: resetStateTimer?
@@ -251,7 +263,7 @@ OnPeerRemoveInWaitForBlock ==
           IF poolHeight >= maxPeerHeight'
             THEN "finished"
             ELSE IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
-    /\ UNCHANGED <<poolHeight, blocks>>
+    /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
 
 \* a timeout when waiting for a block
 OnStateTimeoutInWaitForBlock ==
@@ -269,12 +281,13 @@ OnStateTimeoutInWaitForBlock ==
              \/ /\ \A q \in peers: ~IsPeerAtHeight(q, poolHeight + 1)
                 /\ UNCHANGED <<maxPeerHeight, nextRequestHeight, peerHeights>> 
     \* resetStateTimer?
-    /\ UNCHANGED <<peers, blocks, poolHeight>>
+    /\ UNCHANGED <<peers, blocks, poolHeight, ghostProcessedHeights>>
     /\ state' =
           IF poolHeight >= maxPeerHeight'
             THEN "finished"
             ELSE IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
     
+\* a stop event
 OnStopFSMInWaitForBlock ==
     /\ state = "waitForBlock"
     /\ state' = "finished"
@@ -301,17 +314,28 @@ NextFsm ==
     \/ InWaitForBlock
     \/ UNCHANGED <<state, poolVars>>
 
+(* ------------------------------------------------------------------------------------------------*)
+(* The system is the composition of the non-deterministic reactor and the FSM *)
+(* ------------------------------------------------------------------------------------------------*)
 Init == InitReactor /\ InitFsm
 
 Next == NextReactor /\ NextFsm
 
-\* sample specifications that trigger counterexamples in TLC
-NeverFinish == [] (state /= "finished" \/ poolHeight < maxHeight)
-
+(* ------------------------------------------------------------------------------------------------*)
+(* Expected properties *)
+(* ------------------------------------------------------------------------------------------------*)
+\* a sample property that triggers a counterexample in TLC
 NeverFinishAtMax == [] (state = "finished" => poolHeight < maxHeight)
 
-(* Questions in the back of my head:
+\* This seems to be the safety requirement:
+\*   all blocks up to poolHeight have been processed 
+Safety == 0..poolHeight - 1 \subseteq ghostProcessedHeights
 
+(* ------------------------------------------------------------------------------------------------*)
+(* Questions in the back of my head *)
+(* ------------------------------------------------------------------------------------------------*)
+
+(*
   Q1. What if a faulty peer is reporting a very large height? The protocol is stuck forever?
   
   Q2. Can we ever collect over maxNumRequests (=64) blocks.
@@ -325,5 +349,5 @@ NeverFinishAtMax == [] (state = "finished" => poolHeight < maxHeight)
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Jul 10 14:20:13 CEST 2019 by igor
+\* Last modified Wed Jul 10 15:21:41 CEST 2019 by igor
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
