@@ -37,7 +37,7 @@ VARIABLE state,         \* an FSM state
 \* the block pool: https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/blockchain/v1/pool.go
 VARIABLE peers,         \* the set of active peers, not known to be faulty
          peerHeights,   \* PeerId -> Height to collect the peer responses about their heights 
-         blocks,        \* Height -> PeerID to collect the peers that have delivered the blocks
+         blocks,        \* Height -> PeerID to collect the peers that have to deliver the blocks (one peer per block)
          poolHeight,    \* height of the next block to collect
          maxPeerHeight, \* maximum height of all peers
          nextRequestHeight,     \* the height at which the next request is going to be made
@@ -45,7 +45,8 @@ VARIABLE peers,         \* the set of active peers, not known to be faulty
          \* the implementation contains plannedRequests that we omit here
          
 \* the variables of the block pool, to be used as UNCHANGED poolVars
-poolVars == <<peers, peerHeights, blocks, poolHeight, maxPeerHeight, nextRequestHeight, ghostProcessedHeights>>
+poolVars == <<peers, peerHeights, blocks,
+              poolHeight, maxPeerHeight, nextRequestHeight, ghostProcessedHeights>>
 
 (* The potential states of the FSM *)
 States == { "init", "waitForPeer", "waitForBlock", "finished" }
@@ -118,16 +119,30 @@ UpdateMaxPeerHeight(activePeers, heights) ==
         ELSE CHOOSE max \in { heights[p] : p \in activePeers }:
                 \A p \in activePeers: heights[p] <= max \* max is the maximum
 
-\* Remove a peer from the set of active peers                
-RemovePeer(peerId) ==
-    /\ peers' = peers \ { peerId }  \* remove the peer
-    /\ UNCHANGED peerHeights        \* keep the heights, as the height of the removed peer is never used
+\* remove several peers at once, e.g., see pool.removeShortPeers
+RemoveManyPeers(ids) ==
+    /\ peers' = peers \ ids         \* remove the peers
+    /\ UNCHANGED peerHeights        \* keep the heights, as the height of the removed peers is never used
+    \* remove all block requests to peerId, see pool.RemovePeer and pool.rescheduleRequest(peerId, h)
+    /\ blocks' = [h \in Heights |-> IF blocks[h] \in ids THEN None ELSE blocks[h]]
+    \* update the maximum height 
     /\ UpdateMaxPeerHeight(peers', peerHeights) \* the maximum height may lower
-       \* adjust the height of the next request, if it has lowered
+    \* adjust the height of the next request, if it has lowered
     /\ nextRequestHeight' = Min(maxPeerHeight' + 1, nextRequestHeight)
 
+\* pool.removeShortPeers
+RemoveShortPeers(h) ==
+    RemoveManyPeers({p \in PeerIDs: peerHeights[p] /= None /\ peerHeights[p] < h})
+
+\* pool.removeBadPeers calls removeShortPeers and removes the peers whose rate is bad.
+\* As we are not checking the rate here, we are just removing the short peers.
+RemoveBadPeers(h) == RemoveShortPeers(h)
+
+\* Remove a peer from the set of active peers, see pool.RemovePeer                
+RemovePeer(peerId) == RemoveManyPeers({peerId})
+
+\* The peer has not been removed, nor invalid, nor the block is corrupt
 IsPeerAtHeight(p, h) ==
-    \* the peer has not been removed, nor invalid, nor the block is corrupt
     p \in peers /\ h \in DOMAIN blocks /\ p = blocks[h]
        
 \* A summary of InvalidateFirstTwoBlocks
@@ -137,14 +152,7 @@ InvalidateFirstTwoBlocks(p1, p2) ==
        \/ p1 = None /\ \A q \in PeerIDs: ~IsPeerAtHeight(q, poolHeight)
     /\ \/ IsPeerAtHeight(p2, poolHeight + 1)
        \/ p2 = None /\ \A q \in PeerIDs: ~IsPeerAtHeight(q, poolHeight + 1)
-    \* remove the peers (unless they are None)
-    /\ peers' = peers \ { p1, p2 }
-    \* keep the heights, as the height of the removed peer is ignored
-    /\ UNCHANGED peerHeights
-    \* the maximum height may lower
-    /\ UpdateMaxPeerHeight(peers', peerHeights)
-    \* adjust the height of the next request, if it has lowered
-    /\ nextRequestHeight' = Min(maxPeerHeight' + 1, nextRequestHeight)
+    /\ RemoveManyPeers({p1, p2})
 
 \* Update the peer height (and add if it is not in the set)                    
 UpdatePeer(peerId, height) ==
@@ -153,15 +161,15 @@ UpdatePeer(peerId, height) ==
         /\ peers' = peers \cup { peerId } \* add the peer, if it does not exist
         /\ peerHeights' = [peerHeights EXCEPT ![peerId] = height] \* set the peer's height
         /\ UpdateMaxPeerHeight(peers', peerHeights')
-        /\ UNCHANGED nextRequestHeight
+        /\ UNCHANGED <<nextRequestHeight, blocks>>
         
       [] peerId \notin peers /\ height < poolHeight
         -> (* peer height too small. Ignore. *)
-        UNCHANGED <<peers, peerHeights, maxPeerHeight, nextRequestHeight>>
+        UNCHANGED <<peers, peerHeights, maxPeerHeight, nextRequestHeight, blocks>>
         
       [] peerId \in peers /\ height < poolHeight
         -> (* the peer is corrupt? Remove the peer. *)
-        RemovePeer(peerId)  \* may lower nextRequestHeight
+        RemovePeer(peerId)  \* may lower nextRequestHeight and updates blocks
 
 
 (* ------------------------------------------------------------------------------------------------ *)
@@ -199,7 +207,7 @@ InWaitForPeer ==
              -> /\ UpdatePeer(inEvent.peerID, inEvent.height)
                 /\ state' = IF SomePeers' THEN "waitForBlock" ELSE state
                 /\ outEvent' = NoEvent 
-                /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
+                /\ UNCHANGED <<poolHeight, ghostProcessedHeights>>
                 \* TODO: StopTimer? 
                 
           [] inEvent.type = "stateTimeoutEv"
@@ -220,9 +228,13 @@ InWaitForPeer ==
 \* Produce requests for blocks. See pool.MakeNextRequests and pool.MakeRequestBatch     
 OnMakeRequestsInWaitForBlock ==
     /\ state = "waitForBlock" /\ inEvent.type = "makeRequestsEv"
-    /\ nextRequestHeight' = Min(inEvent.numRequests - 1, maxPeerHeight) \* see pool.go:194-201
-    /\ LET heights == 0..nextRequestHeight' IN
-        \* pool.SendRequest(height)
+    \* TODO: pool.makeRequestBatch calls removeBadPeers first, which is hard to implement in one step
+    /\ LET pendingBlocks == {h \in DOMAIN blocks: blocks[h] /= None} IN
+       LET numPendingBlocks == Cardinality(pendingBlocks) IN \* len(blocks) in pool.go   
+       \*  compute the next request height, see pool.go:194-201
+       nextRequestHeight' =
+         Min(nextRequestHeight + inEvent.maxNumRequests - numPendingBlocks, maxPeerHeight)
+    /\ LET heights == nextRequestHeight..nextRequestHeight' - 1 IN
         \* for each height h, assign a peer whose height is not lower than h
         /\ blocks' =
               [h \in Heights |->
@@ -249,21 +261,22 @@ OnStatusResponseInWaitForBlock ==
             THEN "finished"
             ELSE IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
     /\ outEvent' = NoEvent
-    /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
+    /\ UNCHANGED <<poolHeight, ghostProcessedHeights>>
 
 \* a peer responded with a block
 OnBlockResponseInWaitForBlock ==
     /\ state = "waitForBlock"
     /\ inEvent.type = "blockResponseEv"
-    /\  IF (~inEvent.block.valid \/ inEvent.peerID /= blocks[inEvent.height] \/ inEvent.peerID \notin peers)
+    /\  IF (~inEvent.block.valid \/ inEvent.height \notin DOMAIN blocks
+            \/ inEvent.peerID /= blocks[inEvent.height] \/ inEvent.peerID \notin peers)
         \* A block was received that was unsolicited, from unexpected peer, or that we already have it
         THEN  /\ RemovePeer(inEvent.peerID)
               /\ outEvent' = [type |-> "sendPeerError", peerIDs |-> {inEvent.peerID}]
         \* an OK block, the implementation adds it to the store
         ELSE  /\ outEvent' = NoEvent
-              /\ UNCHANGED <<peers, nextRequestHeight>>
+              /\ UNCHANGED <<peers, blocks, nextRequestHeight>>
     /\ state' = IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
-    /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
+    /\ UNCHANGED <<poolHeight, ghostProcessedHeights>>
 
 \* the block at the current height has been processed
 OnProcessedBlockInWaitForBlock ==
@@ -274,16 +287,16 @@ OnProcessedBlockInWaitForBlock ==
             /\ InvalidateFirstTwoBlocks(p1, p2)
             /\ outEvent' = [ type |-> "sendPeerError",
                              peerIDs |-> { p \in {p1, p2}: p /= None } ]
-            /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
+            /\ UNCHANGED <<poolHeight, ghostProcessedHeights>>
         ELSE \* pool.ProcessedCurrentHeightBlock
           /\ blocks' = [blocks EXCEPT ![poolHeight] = None] \* remove the block at the pool height
           /\ poolHeight' = poolHeight + 1                   \* advance the pool height
           /\ outEvent' = NoEvent
           /\ ghostProcessedHeights' = ghostProcessedHeights \cup {poolHeight} \* record the height
-          /\ UNCHANGED <<peers, peerHeights, maxPeerHeight, nextRequestHeight>>
+          /\ RemoveShortPeers(poolHeight')
+          /\ UNCHANGED nextRequestHeight
           \* pool.peers[peerID].RemoveBlock(pool.Height)
-            \* TODO: resetStateTimer?
-            \* TODO: removeShortPeers?
+          \* TODO: resetStateTimer?
     /\ state' = IF poolHeight' >= maxPeerHeight' THEN "finished" ELSE "waitForBlock"
 
 \* a peer was disconnected or produced an error    
@@ -295,13 +308,13 @@ OnPeerRemoveInWaitForBlock ==
             THEN "finished"
             ELSE IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
     /\ outEvent' = NoEvent
-    /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
+    /\ UNCHANGED <<poolHeight, ghostProcessedHeights>>
 
 \* a timeout when waiting for a block
 OnStateTimeoutInWaitForBlock ==
     /\ state = "waitForBlock" /\ inEvent.type = "stateTimeoutEv"
     /\ inEvent.stateName = state
-    \* pool.RemovePeerAtCurrentHeights
+    \* below we summarize pool.RemovePeerAtCurrentHeights
     /\ \/ \E p \in peers:
           /\ IsPeerAtHeight(p, poolHeight)
           /\ RemovePeer(p)      \* remove the peer at current height
@@ -311,9 +324,9 @@ OnStateTimeoutInWaitForBlock ==
                 /\ RemovePeer(q)    \* remove the peer at height + 1
              \* remove no peers, are we stuck here?
              \/ /\ \A q \in peers: ~IsPeerAtHeight(q, poolHeight + 1)
-                /\ UNCHANGED <<maxPeerHeight, nextRequestHeight, peerHeights>> 
+                /\ UNCHANGED <<maxPeerHeight, blocks, nextRequestHeight, peerHeights>> 
     \* resetStateTimer?
-    /\ UNCHANGED <<peers, blocks, poolHeight, ghostProcessedHeights>>
+    /\ UNCHANGED <<peers, poolHeight, ghostProcessedHeights>>
     /\ outEvent' = NoEvent
     /\ state' =
           IF poolHeight >= maxPeerHeight'
@@ -398,16 +411,13 @@ GoodTermination ==
 (*
   Q1. What if a faulty peer is reporting a very large height? The protocol is stuck forever?
   
-  Q2. Can we ever collect over maxNumRequests (=64) blocks.
-      It seems to be an upper bound on the pool height. See pool.go:194
-      
-  Q3. I do not see why pool.makeRequestBatch cannot produce duplicate heights in pool.plannedRequests.
+  Q2. I do not see why pool.makeRequestBatch cannot produce duplicate heights in pool.plannedRequests.
   
-  Q4. Why don't you clean up pool.plannedRequests in pool.go:180?  
+  Q3. Why don't you clean up pool.plannedRequests in pool.go:180?  
  *)
 
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Jul 10 20:19:16 CEST 2019 by igor
+\* Last modified Fri Jul 12 21:36:19 CEST 2019 by igor
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
