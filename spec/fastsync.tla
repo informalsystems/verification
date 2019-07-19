@@ -20,9 +20,9 @@ EXTENDS Integers, FiniteSets
  *)
 None == -1          \* an undefined value
 PeerIDs == 0..2     \* potential peer ids
-maxHeight == 5      \* the maximum height
+maxHeight == 3      \* the maximum height
 Heights == 0..maxHeight \* potential heights
-NumRequests == 3    \* the number of requests made per batch
+NumRequests == 2    \* the number of requests made per batch
 
 \* basic stuff
 Min(a, b) == IF a < b THEN a ELSE b
@@ -35,18 +35,17 @@ VARIABLE state,         \* an FSM state
          outEvent       \* an event from the FSM to the reactor
 
 \* the block pool: https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/blockchain/v1/pool.go
-VARIABLE peers,         \* the set of active peers, not known to be faulty
+VARIABLE blockPool
+    (* pool is a record that contains: 
+         height,    \* height of the next block to collect
+         peers,         \* the set of active peers, not known to be faulty
          peerHeights,   \* PeerId -> Height to collect the peer responses about their heights 
-         blocks,        \* Height -> PeerID to collect the peers that have to deliver the blocks (one peer per block)
-         poolHeight,    \* height of the next block to collect
          maxPeerHeight, \* maximum height of all peers
+         blocks,        \* Height -> PeerID to collect the peers that have to deliver the blocks (one peer per block)
          nextRequestHeight,     \* the height at which the next request is going to be made
          ghostProcessedHeights   \* a ghost variable to collect the heights that have been processed successfully 
          \* the implementation contains plannedRequests that we omit here
-         
-\* the variables of the block pool, to be used as UNCHANGED poolVars
-poolVars == <<peers, peerHeights, blocks,
-              poolHeight, maxPeerHeight, nextRequestHeight, ghostProcessedHeights>>
+    *)
 
 (* The potential states of the FSM *)
 States == { "init", "waitForPeer", "waitForBlock", "finished" }
@@ -57,7 +56,7 @@ InvalidBlock == [ valid |-> FALSE]
 
 \* These are the types of input events that can be produced by the reactor to the FSM
 InEventTypes == { "startFSMEv", "statusResponseEv", "blockResponseEv", "stateTimeoutEv",
-                "peerRemoveEv", "processedBlockEv", "makeRequestEv", "stopFSMEv" }
+                "peerRemoveEv", "processedBlockEv", "makeRequestsEv", "stopFSMEv" }
 
 \* These are all possible events that can be produced by the reactor as the input to FSM.
 \* Mimicking a combination of bReactorEvent and bReactorEventData.
@@ -74,7 +73,7 @@ InEvents ==
     \cup
     [ type: {"processedBlockEv"}, err: BOOLEAN ]
     \cup
-    [ type: {"makeRequestEv"}, maxNumRequests: {NumRequests} ]
+    [ type: {"makeRequestsEv"}, maxNumRequests: {NumRequests} ]
     
 \* These are the types of the output events that can be produced by the FSM to the reactor
 OutEventTypes == { "NoEvent", "sendStatusRequest", "sendBlockRequest",
@@ -108,68 +107,65 @@ NextReactor ==
 (* The behavior of the block pool, which keeps track of peers, block requests, and block responses *)
 (* See pool.go                                                                                     *)
 (* ------------------------------------------------------------------------------------------------*)
-NoPeers == peers = {}
-SomePeers == peers /= {}
 
 \* Find the maximal height among the (known) heights of the active peers
-UpdateMaxPeerHeight(activePeers, heights) ==
-    maxPeerHeight' =
-        IF activePeers = {}
-        THEN 0 \* no peers, just return 0
-        ELSE CHOOSE max \in { heights[p] : p \in activePeers }:
-                \A p \in activePeers: heights[p] <= max \* max is the maximum
+FindMaxPeerHeight(activePeers, heights) ==
+    IF activePeers = {}
+    THEN 0 \* no peers, just return 0
+    ELSE CHOOSE max \in { heights[p] : p \in activePeers }:
+            \A p \in activePeers: heights[p] <= max \* max is the maximum
 
 \* remove several peers at once, e.g., see pool.removeShortPeers
-RemoveManyPeers(ids) ==
-    /\ peers' = peers \ ids         \* remove the peers
-    /\ UNCHANGED peerHeights        \* keep the heights, as the height of the removed peers is never used
+RemovePeers(pool, ids) ==
+    \* remove the peers
+    LET newPeers == pool.peers \ ids IN
     \* remove all block requests to peerId, see pool.RemovePeer and pool.rescheduleRequest(peerId, h)
-    /\ blocks' = [h \in Heights |-> IF blocks[h] \in ids THEN None ELSE blocks[h]]
+    LET newBlocks == [h \in Heights |-> IF pool.blocks[h] \in ids THEN None ELSE pool.blocks[h]] IN
     \* update the maximum height 
-    /\ UpdateMaxPeerHeight(peers', peerHeights) \* the maximum height may lower
+    LET newMph == FindMaxPeerHeight(newPeers, pool.peerHeights) IN
     \* adjust the height of the next request, if it has lowered
-    /\ nextRequestHeight' = Min(maxPeerHeight' + 1, nextRequestHeight)
+    LET newNrh == Min(newMph + 1, pool.nextRequestHeight) IN
+    [ pool EXCEPT !.peers = newPeers, !.blocks = newBlocks,
+                  !.maxPeerHeight = newMph, !.nextRequestHeight = newNrh]
 
 \* pool.removeShortPeers
-RemoveShortPeers(h) ==
-    RemoveManyPeers({p \in PeerIDs: peerHeights[p] /= None /\ peerHeights[p] < h})
+RemoveShortPeers(pool, h) ==
+    RemovePeers(pool, {p \in PeerIDs: pool.peerHeights[p] /= None /\ pool.peerHeights[p] < h})
 
 \* pool.removeBadPeers calls removeShortPeers and removes the peers whose rate is bad.
 \* As we are not checking the rate here, we are just removing the short peers.
-RemoveBadPeers(h) == RemoveShortPeers(h)
-
-\* Remove a peer from the set of active peers, see pool.RemovePeer                
-RemovePeer(peerId) == RemoveManyPeers({peerId})
+RemoveBadPeers(pool) == RemoveShortPeers(pool, pool.height)
 
 \* The peer has not been removed, nor invalid, nor the block is corrupt
-IsPeerAtHeight(p, h) ==
-    p \in peers /\ h \in DOMAIN blocks /\ p = blocks[h]
+IsPeerAtHeight(pool, p, h) ==
+    p \in pool.peers /\ h \in DOMAIN pool.blocks /\ p = pool.blocks[h]
        
 \* A summary of InvalidateFirstTwoBlocks
-InvalidateFirstTwoBlocks(p1, p2) ==
-    \* find the peers at height and height + 1, if possible
-    /\ \/ IsPeerAtHeight(p1, poolHeight)
-       \/ p1 = None /\ \A q \in PeerIDs: ~IsPeerAtHeight(q, poolHeight)
-    /\ \/ IsPeerAtHeight(p2, poolHeight + 1)
-       \/ p2 = None /\ \A q \in PeerIDs: ~IsPeerAtHeight(q, poolHeight + 1)
-    /\ RemoveManyPeers({p1, p2})
+InvalidateFirstTwoBlocks(pool, p1, p2) ==
+    LET atHeightOrNone(p, ph) ==
+        \/ IsPeerAtHeight(pool, p, ph)
+        \/ p = None /\ \A q \in PeerIDs: ~IsPeerAtHeight(pool, q, ph)
+    IN
+    IF (atHeightOrNone(p1, pool.height) /\ atHeightOrNone(p2, pool.height + 1))
+    THEN RemovePeers(pool, {p1, p2})
+    ELSE pool
 
 \* Update the peer height (and add if it is not in the set)                    
-UpdatePeer(peerId, height) ==
-    CASE height >= poolHeight
+UpdatePeer(pool, peerId, height) ==
+    CASE height >= pool.height
         -> (* the common case. Add or keep the peer and update its height. *)
-        /\ peers' = peers \cup { peerId } \* add the peer, if it does not exist
-        /\ peerHeights' = [peerHeights EXCEPT ![peerId] = height] \* set the peer's height
-        /\ UpdateMaxPeerHeight(peers', peerHeights')
-        /\ UNCHANGED <<nextRequestHeight, blocks>>
+        LET newPeers == pool.peers \cup { peerId } IN \* add the peer, if it does not exist
+        LET newPh == [pool.peerHeights EXCEPT ![peerId] = height] IN \* set the peer's height
+        LET newMph == FindMaxPeerHeight(newPeers, newPh) IN \* find max peer height
+        [pool EXCEPT !.peers = newPeers, !.peerHeights = newPh, !.maxPeerHeight = newMph]
         
-      [] peerId \notin peers /\ height < poolHeight
-        -> (* peer height too small. Ignore. *)
-        UNCHANGED <<peers, peerHeights, maxPeerHeight, nextRequestHeight, blocks>>
+      [] peerId \notin pool.peers /\ height < pool.height
+        -> pool (* peer height too small. Ignore. *)
         
-      [] peerId \in peers /\ height < poolHeight
+      [] peerId \in pool.peers /\ height < pool.height
         -> (* the peer is corrupt? Remove the peer. *)
-        RemovePeer(peerId)  \* may lower nextRequestHeight and updates blocks
+        \* may lower nextRequestHeight and update blocks
+        RemovePeers(pool, {peerId})
 
 
 (* ------------------------------------------------------------------------------------------------ *)
@@ -179,13 +175,15 @@ UpdatePeer(peerId, height) ==
 InitFsm ==
     /\ state = "init"
     /\ outEvent = NoEvent
-    /\ peers = {}
-    /\ poolHeight = 0
-    /\ maxPeerHeight = 0
-    /\ peerHeights = [ p \in PeerIDs |-> None ]     \* no peer height is known
-    /\ blocks = [ h \in Heights |-> None ]          \* no peer has sent a block
-    /\ nextRequestHeight = 0
-    /\ ghostProcessedHeights = {}
+    /\ blockPool = [
+        height |-> 0,
+        peers |-> {},
+        peerHeights |-> [ p \in PeerIDs |-> None ],     \* no peer height is known
+        maxPeerHeight |-> 0,
+        blocks |-> [ h \in Heights |-> None ],          \* no peer has sent a block
+        nextRequestHeight |-> 0,
+        ghostProcessedHeights |-> {}
+       ]
 
 \* when in state init
 InInit ==
@@ -193,151 +191,154 @@ InInit ==
     /\ \/ /\ inEvent.type = "startFSMEv"
           /\ state' = "waitForPeer"
           /\ outEvent' = [type |-> "sendStatusRequest"]
-          /\ UNCHANGED poolVars
+          /\ UNCHANGED blockPool
           
        \/ /\ inEvent.type /= "startFSMEv"
           /\ outEvent' = NoEvent
-          /\ UNCHANGED <<state, poolVars>>
+          /\ UNCHANGED <<state, blockPool>>
 
 (* What happens in the state waitForPeer *)
 
 InWaitForPeer ==
     /\ state = "waitForPeer"
-    /\  CASE inEvent.type = "statusResponseEv"
-             -> /\ UpdatePeer(inEvent.peerID, inEvent.height)
-                /\ state' = IF SomePeers' THEN "waitForBlock" ELSE state
+    /\  CASE inEvent.type = "statusResponseEv" ->
+                /\ blockPool' = UpdatePeer(blockPool, inEvent.peerID, inEvent.height)
+                /\ state' = IF blockPool'.peers /= {} THEN "waitForBlock" ELSE state
                 /\ outEvent' = NoEvent 
-                /\ UNCHANGED <<poolHeight, ghostProcessedHeights>>
                 \* TODO: StopTimer? 
                 
           [] inEvent.type = "stateTimeoutEv"
              -> /\ state' = IF inEvent.stateName = state THEN "finished" ELSE state
                 /\ outEvent' = NoEvent \* TODO: resetTimer instead? 
-                /\ UNCHANGED poolVars
+                /\ UNCHANGED blockPool
              
           [] inEvent.type = "stopFSMEv"
              -> /\ state' = "finished"
                 /\ outEvent' = NoEvent \* TODO: resetTimer instead? 
-                /\ UNCHANGED poolVars
+                /\ UNCHANGED blockPool
              
           [] OTHER
-             -> UNCHANGED <<state, poolVars>> /\ outEvent' = NoEvent
+             -> UNCHANGED <<state, blockPool>> /\ outEvent' = NoEvent
 
 (* What happens in the state waitForBlock *)
 
 \* Produce requests for blocks. See pool.MakeNextRequests and pool.MakeRequestBatch     
 OnMakeRequestsInWaitForBlock ==
     /\ state = "waitForBlock" /\ inEvent.type = "makeRequestsEv"
-    \* TODO: pool.makeRequestBatch calls removeBadPeers first, which is hard to implement in one step
-    /\ LET pendingBlocks == {h \in DOMAIN blocks: blocks[h] /= None} IN
-       LET numPendingBlocks == Cardinality(pendingBlocks) IN \* len(blocks) in pool.go   
-       \*  compute the next request height, see pool.go:194-201
-       nextRequestHeight' =
-         Min(nextRequestHeight + inEvent.maxNumRequests - numPendingBlocks, maxPeerHeight)
-    /\ LET heights == nextRequestHeight..nextRequestHeight' - 1 IN
+    \* pool.MakeRequestBatch calls removeBadPeers first
+    /\  LET cleanPool == RemoveBadPeers(blockPool) IN
+        LET pendingBlocks == {h \in DOMAIN cleanPool.blocks: cleanPool.blocks[h] /= None} IN
+        LET numPendingBlocks == Cardinality(pendingBlocks) IN \* len(blocks) in pool.go   
+        \*  compute the next request height, see pool.go:194-201
+        LET newNrh == Min(cleanPool.maxPeerHeight,
+                          cleanPool.nextRequestHeight + inEvent.maxNumRequests - numPendingBlocks) IN
+        LET heights == cleanPool.nextRequestHeight..newNrh - 1 IN
         \* for each height h, assign a peer whose height is not lower than h
-        /\ blocks' =
+        LET newBlocks ==
               [h \in Heights |->
                 IF h \in heights
-                THEN CHOOSE p \in peers: peerHeights[p] >= h
-                ELSE InvalidBlock
+                THEN CHOOSE p \in cleanPool.peers: cleanPool.peerHeights[p] >= h
+                ELSE cleanPool.blocks[h] \* keep the old value
               ]
+        IN
            \* group all block requests into one output event
         /\ outEvent' = [type |-> "sendBlockRequest",
-                        reqs |-> { [peerID |-> blocks'[h],
+                        reqs |-> { [peerID |-> newBlocks[h],
                                     height |-> h] : h \in heights }]
-    \* TODO: the implementation requires !(peer.NumPendingBlockRequests >= maxRequestsPerPeer)
-    \* TODO: the implementation may report errSendQueueFull
-    \* TODO: peer.RequestSent(height)
-    /\ state' = "waitForBlock"
-    /\ UNCHANGED <<poolHeight, blocks, ghostProcessedHeights>>
+        /\ blockPool' =
+            [cleanPool EXCEPT !.blocks = newBlocks, !.nextRequestHeight = newNrh]                            
+        /\ state' = "waitForBlock"
+        \* TODO: the implementation requires !(peer.NumPendingBlockRequests >= maxRequestsPerPeer)
+        \* TODO: the implementation may report errSendQueueFull
+        \* TODO: peer.RequestSent(height)
              
 \* a peer responded with its height
 OnStatusResponseInWaitForBlock ==
     /\ state = "waitForBlock" /\ inEvent.type = "statusResponseEv"
-    /\ UpdatePeer(inEvent.peerID, inEvent.height)
+    /\ blockPool' = UpdatePeer(blockPool, inEvent.peerID, inEvent.height)
     /\ state' =
-          IF poolHeight >= maxPeerHeight'
+          IF blockPool'.height >= blockPool'.maxPeerHeight
             THEN "finished"
-            ELSE IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
+            ELSE IF blockPool'.peers = {} THEN "waitForPeer" ELSE "waitForBlock"
     /\ outEvent' = NoEvent
-    /\ UNCHANGED <<poolHeight, ghostProcessedHeights>>
 
 \* a peer responded with a block
 OnBlockResponseInWaitForBlock ==
     /\ state = "waitForBlock"
     /\ inEvent.type = "blockResponseEv"
-    /\  IF (~inEvent.block.valid \/ inEvent.height \notin DOMAIN blocks
-            \/ inEvent.peerID /= blocks[inEvent.height] \/ inEvent.peerID \notin peers)
+    /\  IF (~inEvent.block.valid
+            \/ inEvent.height \notin DOMAIN blockPool.blocks
+            \/ inEvent.peerID /= blockPool.blocks[inEvent.height]
+            \/ inEvent.peerID \notin blockPool.peers)
         \* A block was received that was unsolicited, from unexpected peer, or that we already have it
-        THEN  /\ RemovePeer(inEvent.peerID)
+        THEN  /\ blockPool' = RemovePeers(blockPool, {inEvent.peerID})
               /\ outEvent' = [type |-> "sendPeerError", peerIDs |-> {inEvent.peerID}]
         \* an OK block, the implementation adds it to the store
         ELSE  /\ outEvent' = NoEvent
-              /\ UNCHANGED <<peers, blocks, nextRequestHeight>>
-    /\ state' = IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
-    /\ UNCHANGED <<poolHeight, ghostProcessedHeights>>
+              /\ UNCHANGED blockPool
+    /\ state' = IF blockPool'.peers = {} THEN "waitForPeer" ELSE "waitForBlock"
 
 \* the block at the current height has been processed
 OnProcessedBlockInWaitForBlock ==
     /\ state = "waitForBlock" /\ inEvent.type = "processedBlockEv"
     /\  IF inEvent.err
-        THEN
+        THEN \* invalidate the blocks at heights h and h+1, if possible
           \E p1, p2 \in PeerIDs \cup {None}:
-            /\ InvalidateFirstTwoBlocks(p1, p2)
+            /\ blockPool' = InvalidateFirstTwoBlocks(blockPool, p1, p2)
             /\ outEvent' = [ type |-> "sendPeerError",
                              peerIDs |-> { p \in {p1, p2}: p /= None } ]
-            /\ UNCHANGED <<poolHeight, ghostProcessedHeights>>
         ELSE \* pool.ProcessedCurrentHeightBlock
-          /\ blocks' = [blocks EXCEPT ![poolHeight] = None] \* remove the block at the pool height
-          /\ poolHeight' = poolHeight + 1                   \* advance the pool height
           /\ outEvent' = NoEvent
-          /\ ghostProcessedHeights' = ghostProcessedHeights \cup {poolHeight} \* record the height
-          /\ RemoveShortPeers(poolHeight')
-          /\ UNCHANGED nextRequestHeight
+             \* remove the block at the pool height
+          /\ LET newBlocks == [blockPool.blocks EXCEPT ![blockPool.height] = None] IN
+             LET newHeight == blockPool.height + 1 IN       \* advance the pool height
+             \* record the processed height for checking the temporal properties
+             LET newGph == blockPool.ghostProcessedHeights \cup {blockPool.height} IN
+             LET newPool == [blockPool EXCEPT
+                !.blocks = newBlocks, !.height = newHeight, !.ghostProcessedHeights = newGph ]
+             IN
+             blockPool' = RemoveShortPeers(newPool, newHeight)
           \* pool.peers[peerID].RemoveBlock(pool.Height)
           \* TODO: resetStateTimer?
-    /\ state' = IF poolHeight' >= maxPeerHeight' THEN "finished" ELSE "waitForBlock"
+    /\ state' = IF blockPool'.height >= blockPool'.maxPeerHeight THEN "finished" ELSE "waitForBlock"
 
 \* a peer was disconnected or produced an error    
 OnPeerRemoveInWaitForBlock ==
     /\ state = "waitForBlock" /\ inEvent.type = "peerRemoveEv"
-    /\ RemovePeer(inEvent.peerID)
+    /\ blockPool' = RemovePeers(blockPool, {inEvent.peerID})
     /\ state' =
-          IF poolHeight >= maxPeerHeight'
+          IF blockPool'.height >= blockPool'.maxPeerHeight
             THEN "finished"
-            ELSE IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
+            ELSE IF blockPool'.peers = {} THEN "waitForPeer" ELSE "waitForBlock"
     /\ outEvent' = NoEvent
-    /\ UNCHANGED <<poolHeight, ghostProcessedHeights>>
 
 \* a timeout when waiting for a block
 OnStateTimeoutInWaitForBlock ==
     /\ state = "waitForBlock" /\ inEvent.type = "stateTimeoutEv"
     /\ inEvent.stateName = state
     \* below we summarize pool.RemovePeerAtCurrentHeights
-    /\ \/ \E p \in peers:
-          /\ IsPeerAtHeight(p, poolHeight)
-          /\ RemovePeer(p)      \* remove the peer at current height
-       \/ /\ \A p \in peers: ~IsPeerAtHeight(p, poolHeight)
-          /\ \/ \E q \in peers:
-                /\ IsPeerAtHeight(q, poolHeight + 1)
-                /\ RemovePeer(q)    \* remove the peer at height + 1
+    /\ \/ \E p \in blockPool.peers:
+          /\ IsPeerAtHeight(blockPool, p, blockPool.height)
+          /\ blockPool' = RemovePeers(blockPool, {p}) \* remove the peer at current height
+       \/ /\ \A p \in blockPool.peers: ~IsPeerAtHeight(blockPool, p, blockPool.height)
+          /\ \/ \E q \in blockPool.peers:
+                /\ IsPeerAtHeight(blockPool, q, blockPool.height + 1)
+                /\ blockPool' = RemovePeers(blockPool, {q})    \* remove the peer at height + 1
              \* remove no peers, are we stuck here?
-             \/ /\ \A q \in peers: ~IsPeerAtHeight(q, poolHeight + 1)
-                /\ UNCHANGED <<maxPeerHeight, blocks, nextRequestHeight, peerHeights>> 
+             \/ /\ \A q \in blockPool.peers: ~IsPeerAtHeight(blockPool, q, blockPool.height + 1)
+                /\ UNCHANGED blockPool 
     \* resetStateTimer?
-    /\ UNCHANGED <<peers, poolHeight, ghostProcessedHeights>>
     /\ outEvent' = NoEvent
     /\ state' =
-          IF poolHeight >= maxPeerHeight'
+          IF blockPool'.height >= blockPool'.maxPeerHeight
             THEN "finished"
-            ELSE IF NoPeers' THEN "waitForPeer" ELSE "waitForBlock"
+            ELSE IF blockPool'.peers = {} THEN "waitForPeer" ELSE "waitForBlock"
     
 \* a stop event
 OnStopFSMInWaitForBlock ==
     /\ state = "waitForBlock" /\ state' = "finished"
     /\ inEvent.type = "stopFSMEv" /\ outEvent' = NoEvent
-    /\ UNCHANGED poolVars
+    /\ UNCHANGED blockPool
     \* stateTimer.Stop() ?   
         
 \* when in state waitForBlock        
@@ -349,18 +350,18 @@ InWaitForBlock ==
     \/ OnPeerRemoveInWaitForBlock
     \/ OnStateTimeoutInWaitForBlock
     \/ /\ state = "waitForBlock" /\ inEvent.type = "stateTimeoutEv"
-       /\ inEvent.stateName = state /\ outEvent' = NoEvent
-       /\ UNCHANGED <<state, poolVars>>
+       /\ inEvent.stateName /= state /\ outEvent' = NoEvent
+       /\ UNCHANGED <<state, blockPool>>
     \/ OnStopFSMInWaitForBlock
     \/ /\ state = "waitForBlock" /\ inEvent.type = "startFSMEv"
        /\ outEvent' = NoEvent
-       /\ UNCHANGED <<state, poolVars>> 
+       /\ UNCHANGED <<state, blockPool>> 
 
 NextFsm ==
     \/ InInit
     \/ InWaitForPeer
     \/ InWaitForBlock
-    \/ UNCHANGED <<state, poolVars, outEvent>>
+    \/ state = "finished" /\ UNCHANGED <<state, blockPool, outEvent>>
 
 (* ------------------------------------------------------------------------------------------------*)
 (* The system is the composition of the non-deterministic reactor and the FSM *)
@@ -373,11 +374,11 @@ Next == NextReactor /\ NextFsm
 (* Expected properties *)
 (* ------------------------------------------------------------------------------------------------*)
 \* a sample property that triggers a counterexample in TLC
-NeverFinishAtMax == [] (state = "finished" => poolHeight < maxHeight)
+NeverFinishAtMax == [] (state = "finished" => blockPool.height < maxHeight)
 
 \* This seems to be the safety requirement:
 \*   all blocks up to poolHeight have been processed 
-Safety == 0..poolHeight - 1 \subseteq ghostProcessedHeights
+Safety == 0..blockPool.height - 1 \subseteq blockPool.ghostProcessedHeights
 
 \* before specifying liveness, we have to write constraints on the reactor events
 \* a good event
@@ -401,8 +402,8 @@ NoInfiniteResponse ==
     
 \* A liveness property that tells us that the protocol should terminate in the good case
 GoodTermination ==
-  ([]GoodEvent /\ <>[] NoSpam /\ NoInfiniteResponse)
-     => <>(state = "finished" /\ poolHeight = maxHeight)
+  ([]GoodEvent (*/\ <>[] NoSpam /\ NoInfiniteResponse*))
+     => <>(state = "finished" /\ blockPool.height = maxHeight)
 
 (* ------------------------------------------------------------------------------------------------*)
 (* Questions in the back of my head *)
@@ -419,5 +420,5 @@ GoodTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Jul 12 21:36:19 CEST 2019 by igor
+\* Last modified Thu Jul 18 18:18:50 CEST 2019 by igor
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
