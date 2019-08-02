@@ -162,7 +162,7 @@ UpdatePeer(pool, peerId, height) ==
       [] peerId \notin pool.peers /\ height < pool.height
         -> pool (* peer height too small. Ignore. *)
         
-      [] peerId \in pool.peers /\ height < pool.height
+      [] peerId \in pool.peers /\ height < pool.peerHeights[peerId] \*pool.height
         -> (* the peer is corrupt? Remove the peer. *)
         \* may lower nextRequestHeight and update blocks
         RemovePeers(pool, {peerId})
@@ -257,9 +257,11 @@ OnStatusResponseInWaitForBlock ==
     /\ state = "waitForBlock" /\ inEvent.type = "statusResponseEv"
     /\ blockPool' = UpdatePeer(blockPool, inEvent.peerID, inEvent.height)
     /\ state' =
-          IF blockPool'.height >= blockPool'.maxPeerHeight
-            THEN "finished"
-            ELSE IF blockPool'.peers = {} THEN "waitForPeer" ELSE "waitForBlock"
+          IF blockPool'.peers = {}
+          THEN "waitForPeer"
+          ELSE IF blockPool'.height >= blockPool'.maxPeerHeight
+               THEN "finished"
+               ELSE "waitForBlock"
     /\ outEvent' = NoEvent
 
 \* a peer responded with a block
@@ -281,25 +283,28 @@ OnBlockResponseInWaitForBlock ==
 \* the block at the current height has been processed
 OnProcessedBlockInWaitForBlock ==
     /\ state = "waitForBlock" /\ inEvent.type = "processedBlockEv"
-    /\  IF inEvent.err
-        THEN \* invalidate the blocks at heights h and h+1, if possible
-          \E p1, p2 \in PeerIDs \cup {None}:
-            /\ blockPool' = InvalidateFirstTwoBlocks(blockPool, p1, p2)
-            /\ outEvent' = [ type |-> "sendPeerError",
-                             peerIDs |-> { p \in {p1, p2}: p /= None } ]
-        ELSE \* pool.ProcessedCurrentHeightBlock
-          /\ outEvent' = NoEvent
-             \* remove the block at the pool height
-          /\ LET newBlocks == [blockPool.blocks EXCEPT ![blockPool.height] = None] IN
-             LET newHeight == blockPool.height + 1 IN       \* advance the pool height
-             \* record the processed height for checking the temporal properties
-             LET newGph == blockPool.ghostProcessedHeights \cup {blockPool.height} IN
-             LET newPool == [blockPool EXCEPT
-                !.blocks = newBlocks, !.height = newHeight, !.ghostProcessedHeights = newGph ]
-             IN
-             blockPool' = RemoveShortPeers(newPool, newHeight)
-          \* pool.peers[peerID].RemoveBlock(pool.Height)
-          \* TODO: resetStateTimer?
+    /\  IF blockPool.blocks[blockPool.height] = None
+            \/ (blockPool.height + 1 \in DOMAIN blockPool.blocks /\ blockPool.blocks[blockPool.height + 1] = None)
+        THEN outEvent' = NoEvent /\ UNCHANGED blockPool
+        ELSE IF inEvent.err
+            THEN \* invalidate the blocks at heights h and h+1, if possible
+              \E p1, p2 \in PeerIDs \cup {None}:
+                /\ blockPool' = InvalidateFirstTwoBlocks(blockPool, p1, p2)
+                /\ outEvent' = [ type |-> "sendPeerError",
+                                 peerIDs |-> { p \in {p1, p2}: p /= None } ]
+            ELSE \* pool.ProcessedCurrentHeightBlock
+              /\ outEvent' = NoEvent
+                 \* remove the block at the pool height
+              /\ LET newBlocks == [blockPool.blocks EXCEPT ![blockPool.height] = None] IN
+                 LET newHeight == blockPool.height + 1 IN       \* advance the pool height
+                 \* record the processed height for checking the temporal properties
+                 LET newGph == blockPool.ghostProcessedHeights \cup {blockPool.height} IN
+                 LET newPool == [blockPool EXCEPT
+                    !.blocks = newBlocks, !.height = newHeight, !.ghostProcessedHeights = newGph ]
+                 IN
+                 blockPool' = RemoveShortPeers(newPool, newHeight)
+              \* pool.peers[peerID].RemoveBlock(pool.Height)
+              \* TODO: resetStateTimer?
     /\ state' = IF blockPool'.height >= blockPool'.maxPeerHeight THEN "finished" ELSE "waitForBlock"
 
 \* a peer was disconnected or produced an error    
@@ -307,9 +312,11 @@ OnPeerRemoveInWaitForBlock ==
     /\ state = "waitForBlock" /\ inEvent.type = "peerRemoveEv"
     /\ blockPool' = RemovePeers(blockPool, {inEvent.peerID})
     /\ state' =
-          IF blockPool'.height >= blockPool'.maxPeerHeight
-            THEN "finished"
-            ELSE IF blockPool'.peers = {} THEN "waitForPeer" ELSE "waitForBlock"
+          IF blockPool'.peers = {}
+          THEN "waitForPeer"
+          ELSE IF blockPool'.height >= blockPool'.maxPeerHeight
+               THEN "finished"
+               ELSE "waitForBlock"
     /\ outEvent' = NoEvent
 
 \* a timeout when waiting for a block
@@ -330,9 +337,11 @@ OnStateTimeoutInWaitForBlock ==
     \* resetStateTimer?
     /\ outEvent' = NoEvent
     /\ state' =
-          IF blockPool'.height >= blockPool'.maxPeerHeight
-            THEN "finished"
-            ELSE IF blockPool'.peers = {} THEN "waitForPeer" ELSE "waitForBlock"
+          IF blockPool'.peers = {}
+          THEN "waitForPeer"
+          ELSE IF blockPool'.height >= blockPool'.maxPeerHeight
+               THEN "finished"
+               ELSE "waitForBlock"
     
 \* a stop event
 OnStopFSMInWaitForBlock ==
@@ -374,7 +383,12 @@ Next == NextReactor /\ NextFsm
 (* Expected properties *)
 (* ------------------------------------------------------------------------------------------------*)
 \* a sample property that triggers a counterexample in TLC
-NeverFinishAtMax == [] (state = "finished" => blockPool.height < maxHeight)
+NeverFinishAtMax == [] (state = "finished" => blockPool.height < blockPool.maxPeerHeight)
+
+AlwaysFinishAtMax ==
+   ([] (inEvent.type /= "stopFSMEv"))
+     => [] (state = "finished" => blockPool.height = blockPool.maxPeerHeight)
+
 
 \* This seems to be the safety requirement:
 \*   all blocks up to poolHeight have been processed 
@@ -420,5 +434,6 @@ GoodTermination ==
 
 =============================================================================
 \* Modification History
+\* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Last modified Thu Jul 18 18:18:50 CEST 2019 by igor
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
