@@ -69,7 +69,7 @@ InEvents ==
     \cup
     [ type: {"stateTimeoutEv"}, stateName: States ]
     \cup
-    [ type: {"peerRemoveEv"}, peerID: PeerIDs, err: BOOLEAN ]
+    [ type: {"peerRemoveEv"}, peerIDs: SUBSET PeerIDs \ {} ]
     \cup
     [ type: {"processedBlockEv"}, err: BOOLEAN ]
     \cup
@@ -84,7 +84,6 @@ OutEventTypes == { "NoEvent", "sendStatusRequest", "sendBlockRequest",
 OutEvents ==
     [ type: {"NoEvent", "sendStatusRequest", "switchToConsensus"}]
     \cup
-    \* 
     [ type: {"sendBlockRequest"}, reqs: [peerID: PeerIDs, height: Heights]]
     \cup
     [ type: {"sendPeerError"}, peerID: SUBSET PeerIDs] \* we omit the error field 
@@ -93,15 +92,6 @@ OutEvents ==
     
 NoEvent == [type |-> "NoEvent"]                       
 
-(* ------------------------------------------------------------------------------------------------ *)
-(* The behavior of the reactor. In this specification, the reactor keeps generating events.         *)
-(* See reactor.go                                                                                   *)
-(* ------------------------------------------------------------------------------------------------ *)
-InitReactor ==
-    inEvent = [type |-> "startFSMEv"]
-    
-NextReactor ==
-    inEvent' \in InEvents \* the reactor produces an arbitrary input event to FSM
 
 (* ------------------------------------------------------------------------------------------------*)
 (* The behavior of the block pool, which keeps track of peers, block requests, and block responses *)
@@ -167,6 +157,75 @@ UpdatePeer(pool, peerId, height) ==
         \* may lower nextRequestHeight and update blocks
         RemovePeers(pool, {peerId})
 
+(* ------------------------------------------------------------------------------------------------ *)
+(* The behavior of the reactor.See reactor.go                                                       *)
+(*                                                                                                  *)
+(* There are two kinds of reactors:                                                                 *)
+(*   1. NextChaosReactor produces all possible events in any order.                                 *) 
+(*   2. NextReactor follows the logic of reactor.go.                                                *) 
+(* ------------------------------------------------------------------------------------------------ *)
+InitReactor ==
+    inEvent = [type |-> "startFSMEv"]
+    
+NextChaosReactor ==
+    inEvent' \in InEvents \* the reactor produces an arbitrary input event to FSM
+
+\* The reactor that tries to follow the logic of reactor.go
+
+\* the following actions are defined in reactor.poolRoutine
+OnSendBlockRequestTicker == \* every 10 ms
+    /\  LET unprocessedBlocks == {h \in DOMAIN blockPool.blocks: blockPool.blocks[h] /= None} IN
+        \* reactor_fsm.NeedsBlocks
+        state = "waitForBlock" /\ NumRequests > Cardinality(unprocessedBlocks)
+    /\ inEvent' = [ type |-> "makeRequestsEv", maxNumRequests |-> NumRequests ]
+    
+OnStatusResponseEv ==
+    \* any status response can come from blockchain, pick one non-deterministically
+    inEvent' \in [ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights ]
+    
+OnBlockResponseEv ==
+    \* any block response can come from blockchain, pick one non-deterministically
+    inEvent' \in [ type: {"blockResponseEv"}, peerID: PeerIDs, height: Heights, block: Blocks ]
+
+OnRemovePeerEv ==
+    \* although peerRemoveEv admits an arbitrary set, we produce just a singleton
+    inEvent' \in [ type: {"peerRemoveEv"}, peerIDs: { {p} : p \in PeerIDs } ]
+
+OnPeerErrorEv ==
+    \* XXX: we need a queue instead of outEvent. However this is compensated by OnPeerRemoveEv.
+    /\ outEvent.type = "peerErrorEv"
+    /\ inEvent' = [ type |-> "peerRemoveEv", peerIDs |-> {outEvent.peerIDs} ]
+    
+\* processBlocksRoutine
+OnProcessReceivedBlockTicker == \* every 10 ms
+    \* a block could be processed only if there are two blocks to do verification
+    /\ LET h == blockPool.height IN
+        /\ { h, h + 1 } \subseteq DOMAIN blockPool.blocks
+        /\ blockPool.blocks[h] /= None
+        /\ blockPool.blocks[h + 1] /= None
+    /\ inEvent' \in [ type: {"processedBlockEv"}, err: BOOLEAN ]
+
+OnStateTimeoutEv == \* after XXX ms if the FSM resides in the same state
+    inEvent' = [type |-> "stateTimeoutEv", stateName |-> state]
+
+
+\* the following three events are not specified, as the do not seem to be important    
+\* OnStatusUpdateTicker == \* every 10 ms
+\*    TRUE \* the implementation broadcasts the request to blockchain, we do nothing
+
+\* messages from FSM
+\*OnSyncFinishedEv ==
+\*    TRUE
+
+
+NextReactor ==
+    \/ OnSendBlockRequestTicker
+    \/ OnStatusResponseEv
+    \/ OnBlockResponseEv
+    \/ OnRemovePeerEv
+    \/ OnPeerErrorEv
+    \/ OnProcessReceivedBlockTicker
+    \/ OnStateTimeoutEv
 
 (* ------------------------------------------------------------------------------------------------ *)
 (* The behavior of the fast-sync state machine                                                      *)
@@ -310,7 +369,7 @@ OnProcessedBlockInWaitForBlock ==
 \* a peer was disconnected or produced an error    
 OnPeerRemoveInWaitForBlock ==
     /\ state = "waitForBlock" /\ inEvent.type = "peerRemoveEv"
-    /\ blockPool' = RemovePeers(blockPool, {inEvent.peerID})
+    /\ blockPool' = RemovePeers(blockPool, inEvent.peerIDs)
     /\ state' =
           IF blockPool'.peers = {}
           THEN "waitForPeer"
@@ -396,7 +455,7 @@ Safety == 0..blockPool.height - 1 \subseteq blockPool.ghostProcessedHeights
 
 \* before specifying liveness, we have to write constraints on the reactor events
 \* a good event
-GoodEvent ==
+NoFailuresAndTimeouts ==
     \* no timeouts, no peer removal
     /\ inEvent.type \notin { "stateTimeoutEv", "peerRemoveEv" }
     \* no invalid blocks
@@ -404,19 +463,14 @@ GoodEvent ==
     /\ inEvent.type = "processedBlockEv" => ~inEvent.err
     
 \* the reactor can always kill progress by sending updates or useless messages
-NoSpam == inEvent.type \notin
-     { "statusResponseEv", "startFSMEv",
-       "stopFSMEv", "processedBlockEv", "makeRequestEv"}
-
-\* we cannot get a response for the same height infinitely often
-NoInfiniteResponse ==
-  \A h \in Heights:
-     [](inEvent.type = "blockResponseEv" /\ inEvent.height = h
-         => <>[](inEvent.type /= "blockResponseEv" \/ inEvent.height /= h))   
+FiniteResponse ==
+    <>[] (inEvent.type
+         \notin { "statusResponseEv", "startFSMEv", "stopFSMEv", "blockResponseEv",
+                  "processedBlockEv", "makeRequestsEv"})
     
 \* A liveness property that tells us that the protocol should terminate in the good case
 GoodTermination ==
-  ([]GoodEvent (*/\ <>[] NoSpam /\ NoInfiniteResponse*))
+  ([]NoFailuresAndTimeouts /\ FiniteResponse)
      => <>(state = "finished" /\ blockPool.height = maxHeight)
 
 (* ------------------------------------------------------------------------------------------------*)
@@ -434,6 +488,6 @@ GoodTermination ==
 
 =============================================================================
 \* Modification History
+\* Last modified Thu Aug 08 16:38:06 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
-\* Last modified Thu Jul 18 18:18:50 CEST 2019 by igor
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
