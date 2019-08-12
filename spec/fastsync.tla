@@ -471,7 +471,7 @@ FiniteResponse ==
 \* A liveness property that tells us that the protocol should terminate in the good case
 GoodTermination ==
   ([]NoFailuresAndTimeouts /\ FiniteResponse)
-     => <>(state = "finished" /\ blockPool.height = maxHeight)
+     => <>(state = "finished" /\ blockPool.height = blockPool.maxPeerHeight)
 
 (* ------------------------------------------------------------------------------------------------*)
 (* Questions in the back of my head *)
@@ -488,6 +488,6 @@ GoodTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Aug 08 16:38:06 CEST 2019 by igor
+\* Last modified Mon Aug 12 14:01:59 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
