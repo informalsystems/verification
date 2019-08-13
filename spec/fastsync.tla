@@ -21,7 +21,7 @@ EXTENDS Integers, FiniteSets
 None == -1          \* an undefined value
 PeerIDs == 0..2     \* potential peer ids
 maxHeight == 3      \* the maximum height
-Heights == 0..maxHeight \* potential heights
+Heights == 1..maxHeight \* potential heights
 NumRequests == 2    \* the number of requests made per batch
 
 \* basic stuff
@@ -43,7 +43,8 @@ VARIABLE blockPool
          maxPeerHeight, \* maximum height of all peers
          blocks,        \* Height -> PeerID to collect the peers that have to deliver the blocks (one peer per block)
          nextRequestHeight,     \* the height at which the next request is going to be made
-         ghostProcessedHeights   \* a ghost variable to collect the heights that have been processed successfully 
+         ghostReceivedBlocks,   \* a ghost variable to collect the heights for which the correct blocks were received 
+         ghostProcessedHeights  \* a ghost variable to collect the heights that have been processed successfully 
          \* the implementation contains plannedRequests that we omit here
     *)
 
@@ -128,7 +129,10 @@ RemoveBadPeers(pool) == RemoveShortPeers(pool, pool.height)
 
 \* The peer has not been removed, nor invalid, nor the block is corrupt
 IsPeerAtHeight(pool, p, h) ==
-    p \in pool.peers /\ h \in DOMAIN pool.blocks /\ p = pool.blocks[h]
+    /\ p \in pool.peers                 \* the peer is active
+    /\ h \in DOMAIN pool.blocks         \* the height has been assigned a peer
+    /\ p = pool.blocks[h]               \* the block should have been sent by the peer p
+    /\ h \in pool.ghostReceivedBlocks   \* the block has been received
        
 \* A summary of InvalidateFirstTwoBlocks
 InvalidateFirstTwoBlocks(pool, p1, p2) ==
@@ -142,20 +146,23 @@ InvalidateFirstTwoBlocks(pool, p1, p2) ==
 
 \* Update the peer height (and add if it is not in the set)                    
 UpdatePeer(pool, peerId, height) ==
-    CASE height >= pool.height
-        -> (* the common case. Add or keep the peer and update its height. *)
-        LET newPeers == pool.peers \cup { peerId } IN \* add the peer, if it does not exist
-        LET newPh == [pool.peerHeights EXCEPT ![peerId] = height] IN \* set the peer's height
-        LET newMph == FindMaxPeerHeight(newPeers, newPh) IN \* find max peer height
-        [pool EXCEPT !.peers = newPeers, !.peerHeights = newPh, !.maxPeerHeight = newMph]
-        
-      [] peerId \notin pool.peers /\ height < pool.height
-        -> pool (* peer height too small. Ignore. *)
-        
-      [] peerId \in pool.peers /\ height < pool.peerHeights[peerId] \*pool.height
-        -> (* the peer is corrupt? Remove the peer. *)
-        \* may lower nextRequestHeight and update blocks
-        RemovePeers(pool, {peerId})
+    IF peerId \notin pool.peers
+    THEN IF height < pool.height
+        THEN pool (* peer height too small. Ignore. *)
+        ELSE 
+            (* the common case. Add or keep the peer and update its height. *)
+            LET newPeers == pool.peers \cup { peerId } IN \* add the peer, if it does not exist
+            LET newPh == [pool.peerHeights EXCEPT ![peerId] = height] IN \* set the peer's height
+            LET newMph == FindMaxPeerHeight(newPeers, newPh) IN \* find max peer height
+            [pool EXCEPT !.peers = newPeers, !.peerHeights = newPh, !.maxPeerHeight = newMph]
+    ELSE IF height < pool.peerHeights[peerId]
+        THEN (* the peer is corrupt? Remove the peer. *)
+            \* may lower nextRequestHeight and update blocks
+            RemovePeers(pool, {peerId})
+        ELSE
+            LET newPh == [pool.peerHeights EXCEPT ![peerId] = height] IN \* set the peer's height
+            LET newMph == FindMaxPeerHeight(pool.peers, newPh) IN \* find max peer height
+            [pool EXCEPT !.peerHeights = newPh, !.maxPeerHeight = newMph]
 
 (* ------------------------------------------------------------------------------------------------ *)
 (* The behavior of the reactor.See reactor.go                                                       *)
@@ -201,8 +208,8 @@ OnProcessReceivedBlockTicker == \* every 10 ms
     \* a block could be processed only if there are two blocks to do verification
     /\ LET h == blockPool.height IN
         /\ { h, h + 1 } \subseteq DOMAIN blockPool.blocks
-        /\ blockPool.blocks[h] /= None
-        /\ blockPool.blocks[h + 1] /= None
+        /\ blockPool.blocks[h] /= None /\ h \in blockPool.ghostReceivedBlocks
+        /\ blockPool.blocks[h + 1] /= None /\ h + 1 \in blockPool.ghostReceivedBlocks
     /\ inEvent' \in [ type: {"processedBlockEv"}, err: BOOLEAN ]
 
 OnStateTimeoutEv == \* after XXX ms if the FSM resides in the same state
@@ -234,15 +241,17 @@ NextReactor ==
 InitFsm ==
     /\ state = "init"
     /\ outEvent = NoEvent
-    /\ blockPool = [
-        height |-> 0,
-        peers |-> {},
-        peerHeights |-> [ p \in PeerIDs |-> None ],     \* no peer height is known
-        maxPeerHeight |-> 0,
-        blocks |-> [ h \in Heights |-> None ],          \* no peer has sent a block
-        nextRequestHeight |-> 0,
-        ghostProcessedHeights |-> {}
-       ]
+    /\ \E startHeight \in Heights:
+         blockPool = [
+            height |-> startHeight,
+            peers |-> {},
+            peerHeights |-> [ p \in PeerIDs |-> None ],     \* no peer height is known
+            maxPeerHeight |-> 0,
+            blocks |-> [ h \in Heights |-> None ],          \* no peer has sent a block
+            nextRequestHeight |-> startHeight,
+            ghostReceivedBlocks |-> {},
+            ghostProcessedHeights |-> {}
+         ]
 
 \* when in state init
 InInit ==
@@ -336,7 +345,7 @@ OnBlockResponseInWaitForBlock ==
               /\ outEvent' = [type |-> "sendPeerError", peerIDs |-> {inEvent.peerID}]
         \* an OK block, the implementation adds it to the store
         ELSE  /\ outEvent' = NoEvent
-              /\ UNCHANGED blockPool
+              /\ blockPool' = [blockPool EXCEPT !.ghostReceivedBlocks = @ \cup {inEvent.height}]
     /\ state' = IF blockPool'.peers = {} THEN "waitForPeer" ELSE "waitForBlock"
 
 \* the block at the current height has been processed
@@ -448,6 +457,9 @@ AlwaysFinishAtMax ==
    ([] (inEvent.type /= "stopFSMEv"))
      => [] (state = "finished" => blockPool.height = blockPool.maxPeerHeight)
 
+NeverFinishAbovePeerHeight ==
+    [] (state = "finished" (*/\ blockPool.maxPeerHeight > 0*)
+        => (blockPool.height <= blockPool.maxPeerHeight))
 
 \* This seems to be the safety requirement:
 \*   all blocks up to poolHeight have been processed 
@@ -488,6 +500,6 @@ GoodTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Aug 12 14:01:59 CEST 2019 by igor
+\* Last modified Tue Aug 13 19:05:49 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
