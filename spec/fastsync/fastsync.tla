@@ -7,57 +7,67 @@
  We are modeling three important ingredients:
     - a non-faulty FSM that does fast sync
     - a block pool that maintains the blocks that FSM receives from the peers, and
-    - the reactor, which may be completely chaotic.
+    - two reactors: a chaotic one and one which does some checks as in the implementation
     
  This specification focuses on the events that are received and produced by the FSM from the reactor.
 *)
 
 EXTENDS Integers, FiniteSets
 
-(*
- Constants that are introduced for model checking purposes.
- In the future, we may want to introduce them as CONSTANTS.
- *)
+\* the protocol parameters
+CONSTANTS
+    PeerIDs,        \* potential peer ids, a set of integers, e.g., 0..2
+    maxHeight,      \* the maximum height, an integer, e.g., 3
+    numRequests     \* the number of requests made per batch, e.g., 2
+
+\* a few values
 None == -1          \* an undefined value
-PeerIDs == 0..2     \* potential peer ids
-maxHeight == 3      \* the maximum height
 Heights == 1..maxHeight \* potential heights
-NumRequests == 2    \* the number of requests made per batch
 
 \* basic stuff
 Min(a, b) == IF a < b THEN a ELSE b
 
 \* the state of the reactor: 
-VARIABLES inEvent       \* an event from the reactor to the FSM
+VARIABLES inEvent,       \* an event from the reactor to the FSM
+          reactorRunning \* a Boolean, negation of stopProcessing in the implementation
                     
 \* the state of the FSM: https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/blockchain/v1/reactor_fsm.go
-VARIABLE state,         \* an FSM state
-         outEvent       \* an event from the FSM to the reactor
+VARIABLES state,         \* an FSM state
+          outEvent       \* an event from the FSM to the reactor
 
 \* the block pool: https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/blockchain/v1/pool.go
 VARIABLE blockPool
-    (* pool is a record that contains: 
-         height,    \* height of the next block to collect
-         peers,         \* the set of active peers, not known to be faulty
-         peerHeights,   \* PeerId -> Height to collect the peer responses about their heights 
-         maxPeerHeight, \* maximum height of all peers
-         blocks,        \* Height -> PeerID to collect the peers that have to deliver the blocks (one peer per block)
-         nextRequestHeight,     \* the height at which the next request is going to be made
-         ghostReceivedBlocks,   \* a ghost variable to collect the heights for which the correct blocks were received 
-         ghostProcessedHeights  \* a ghost variable to collect the heights that have been processed successfully 
+    (*
+       blockPool is a record that contains: 
+         height: Int,
+            height of the next block to collect
+         peers: {Int},
+            the set of active peers, not known to be faulty
+         peerHeights: [PeerId -> Height],
+            a map to collect the peer responses about their heights 
+         maxPeerHeight: Int,
+            the maximal height among all active peers
+         blocks: [Height -> PeerID],
+            a map to collect the peers that have to deliver the blocks (one peer per block)
+         nextRequestHeight: Int,
+            the height at which the next request is going to be made
+         ghostReceivedBlocks: {Int},
+            a set of the heights for which the correct blocks were received, not in the implementation 
+         ghostProcessedHeights:
+            {Int}, a set of the heights that have been processed successfully, not in the implementation 
          \* the implementation contains plannedRequests that we omit here
     *)
 
-(* The potential states of the FSM *)
+(* The control states of the FSM *)
 States == { "init", "waitForPeer", "waitForBlock", "finished" }
 
-(* Currently, a block is completely abstract. We only know whether it is valid or not. *)
+(* From the FSM's point of view, a block is completely abstract. We only know whether it is valid or not. *)
 Blocks == [ valid: BOOLEAN ]
 InvalidBlock == [ valid |-> FALSE]
 
 \* These are the types of input events that can be produced by the reactor to the FSM
 InEventTypes == { "startFSMEv", "statusResponseEv", "blockResponseEv", "stateTimeoutEv",
-                "peerRemoveEv", "processedBlockEv", "makeRequestsEv", "stopFSMEv" }
+                  "peerRemoveEv", "processedBlockEv", "makeRequestsEv", "stopFSMEv" }
 
 \* These are all possible events that can be produced by the reactor as the input to FSM.
 \* Mimicking a combination of bReactorEvent and bReactorEventData.
@@ -70,17 +80,17 @@ InEvents ==
     \cup
     [ type: {"stateTimeoutEv"}, stateName: States ]
     \cup
-    [ type: {"peerRemoveEv"}, peerIDs: SUBSET PeerIDs \ {} ]
+    [ type: {"peerRemoveEv"}, peerIDs: SUBSET PeerIDs \ {} ] \* NOTE: peerIDs is a set of ids
     \cup
     [ type: {"processedBlockEv"}, err: BOOLEAN ]
     \cup
-    [ type: {"makeRequestsEv"}, maxNumRequests: {NumRequests} ]
+    [ type: {"makeRequestsEv"}, maxNumRequests: {numRequests} ]
     
 \* These are the types of the output events that can be produced by the FSM to the reactor
 OutEventTypes == { "NoEvent", "sendStatusRequest", "sendBlockRequest",
                    "sendPeerError", "resetStateTimer", "switchToConsensus" }
                    
-\* These are all possible events that can be produced by the FSM to reactor.
+\* These are all possible events that can be produced by the FSM to reactor, reactor_fsm.go:354-360
 \* In contrast to the implementation, we group the requests together.
 OutEvents ==
     [ type: {"NoEvent", "sendStatusRequest", "switchToConsensus"}]
@@ -90,7 +100,8 @@ OutEvents ==
     [ type: {"sendPeerError"}, peerID: SUBSET PeerIDs] \* we omit the error field 
     \cup
     [ type: {"resetStateTimer"}] \* we omit the timer and timeout fields
-    
+
+\* When FSM produces no event, it emits NoEvent    
 NoEvent == [type |-> "NoEvent"]                       
 
 
@@ -121,10 +132,14 @@ RemovePeers(pool, ids) ==
 
 \* pool.removeShortPeers
 RemoveShortPeers(pool, h) ==
-    RemovePeers(pool, {p \in PeerIDs: pool.peerHeights[p] /= None /\ pool.peerHeights[p] < h})
+    LET ShortPeers ==
+        {p \in PeerIDs: pool.peerHeights[p] /= None /\ pool.peerHeights[p] < h}
+    IN
+    RemovePeers(pool, ShortPeers)
 
 \* pool.removeBadPeers calls removeShortPeers and removes the peers whose rate is bad.
 \* As we are not checking the rate here, we are just removing the short peers.
+\* Alternatively, we could drop the short peers and an arbitrary subset of the peers.
 RemoveBadPeers(pool) == RemoveShortPeers(pool, pool.height)
 
 \* The peer has not been removed, nor invalid, nor the block is corrupt
@@ -144,22 +159,21 @@ InvalidateFirstTwoBlocks(pool, p1, p2) ==
     THEN RemovePeers(pool, {p1, p2})
     ELSE pool
 
-\* Update the peer height (and add if it is not in the set)                    
+\* Update the peer height (and add the peer if it is not in the set yet)                    
 UpdatePeer(pool, peerId, height) ==
     IF peerId \notin pool.peers
     THEN IF height < pool.height
         THEN pool (* peer height too small. Ignore. *)
-        ELSE 
-            (* the common case. Add or keep the peer and update its height. *)
-            LET newPeers == pool.peers \cup { peerId } IN \* add the peer, if it does not exist
-            LET newPh == [pool.peerHeights EXCEPT ![peerId] = height] IN \* set the peer's height
-            LET newMph == FindMaxPeerHeight(newPeers, newPh) IN \* find max peer height
+        ELSE (* the common case. Add the peer and set its height. *)
+            LET newPeers == pool.peers \cup { peerId } \* add the peer, if it does not exist
+                newPh == [pool.peerHeights EXCEPT ![peerId] = height] \* set the peer's height
+                newMph == FindMaxPeerHeight(newPeers, newPh)  \* find max peer height
+            IN
             [pool EXCEPT !.peers = newPeers, !.peerHeights = newPh, !.maxPeerHeight = newMph]
     ELSE IF height < pool.peerHeights[peerId]
-        THEN (* the peer is corrupt? Remove the peer. *)
-            \* may lower nextRequestHeight and update blocks
-            RemovePeers(pool, {peerId})
-        ELSE
+        THEN (* The peer is corrupt? Remove the peer. *)
+            RemovePeers(pool, {peerId}) \* may lower nextRequestHeight and update blocks
+        ELSE (* Update the peer height *)
             LET newPh == [pool.peerHeights EXCEPT ![peerId] = height] IN \* set the peer's height
             LET newMph == FindMaxPeerHeight(pool.peers, newPh) IN \* find max peer height
             [pool EXCEPT !.peerHeights = newPh, !.maxPeerHeight = newMph]
@@ -171,58 +185,76 @@ UpdatePeer(pool, peerId, height) ==
 (*   1. NextChaosReactor produces all possible events in any order.                                 *) 
 (*   2. NextReactor follows the logic of reactor.go.                                                *) 
 (* ------------------------------------------------------------------------------------------------ *)
-InitReactor ==
-    inEvent = [type |-> "startFSMEv"]
-    
-NextChaosReactor ==
-    inEvent' \in InEvents \* the reactor produces an arbitrary input event to FSM
 
-\* The reactor that tries to follow the logic of reactor.go
+\* both reactors start by producing the event for FSM to start
+InitReactor ==
+    inEvent = [type |-> "startFSMEv"] /\ reactorRunning = TRUE
+
+(* The chaotic reactor *)
+NextChaosReactor ==
+    /\ reactorRunning' \in BOOLEAN \* the reactor can stop and start again any time
+    /\  IF reactorRunning
+        THEN inEvent' \in InEvents \* the reactor produces an arbitrary input event to FSM
+        ELSE inEvent' = NoEvent
+
+(* The benigh reactor that tries to follow the logic of reactor.go *)
 
 \* the following actions are defined in reactor.poolRoutine
-OnSendBlockRequestTicker == \* every 10 ms
-    /\  LET unprocessedBlocks == {h \in DOMAIN blockPool.blocks: blockPool.blocks[h] /= None} IN
+OnSendBlockRequestTicker == \* every 10 ms, but our spec is asynchronous
+    /\  LET unprocessedBlocks ==
+            { h \in DOMAIN blockPool.blocks: blockPool.blocks[h] /= None}
+        IN
         \* reactor_fsm.NeedsBlocks
-        state = "waitForBlock" /\ NumRequests > Cardinality(unprocessedBlocks)
-    /\ inEvent' = [ type |-> "makeRequestsEv", maxNumRequests |-> NumRequests ]
+        state = "waitForBlock" /\ numRequests > Cardinality(unprocessedBlocks)
+    /\ inEvent' = [ type |-> "makeRequestsEv", maxNumRequests |-> numRequests ]
+    /\ UNCHANGED reactorRunning
     
 OnStatusResponseEv ==
-    \* any status response can come from blockchain, pick one non-deterministically
-    inEvent' \in [ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights ]
+    \* any status response can come from the blockchain, pick one non-deterministically
+    /\ inEvent' \in [ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights ]
+    /\ UNCHANGED reactorRunning
     
 OnBlockResponseEv ==
-    \* any block response can come from blockchain, pick one non-deterministically
-    inEvent' \in [ type: {"blockResponseEv"}, peerID: PeerIDs, height: Heights, block: Blocks ]
+    \* any block response can come from the blockchain, pick one non-deterministically
+    /\ inEvent' \in [ type: {"blockResponseEv"}, peerID: PeerIDs, height: Heights, block: Blocks ]
+    /\ UNCHANGED reactorRunning
 
 OnRemovePeerEv ==
     \* although peerRemoveEv admits an arbitrary set, we produce just a singleton
-    inEvent' \in [ type: {"peerRemoveEv"}, peerIDs: { {p} : p \in PeerIDs } ]
+    /\ inEvent' \in [ type: {"peerRemoveEv"}, peerIDs: { {p} : p \in PeerIDs } ]
+    /\ UNCHANGED reactorRunning
 
 OnPeerErrorEv ==
-    \* XXX: we need a queue instead of outEvent. However this is compensated by OnPeerRemoveEv.
+    \* XXX: we would need a queue instead of a single outEvent.
+    \* However, this is compensated by OnPeerRemoveEv.
     /\ outEvent.type = "peerErrorEv"
     /\ inEvent' = [ type |-> "peerRemoveEv", peerIDs |-> {outEvent.peerIDs} ]
+    /\ UNCHANGED reactorRunning
     
-\* processBlocksRoutine
-OnProcessReceivedBlockTicker == \* every 10 ms
+\* reactor.processBlocksRoutine
+OnProcessReceivedBlockTicker == \* every 10 ms, again, no precise time here
     \* a block could be processed only if there are two blocks to do verification
     /\ LET h == blockPool.height IN
         /\ { h, h + 1 } \subseteq DOMAIN blockPool.blocks
         /\ blockPool.blocks[h] /= None /\ h \in blockPool.ghostReceivedBlocks
         /\ blockPool.blocks[h + 1] /= None /\ h + 1 \in blockPool.ghostReceivedBlocks
     /\ inEvent' \in [ type: {"processedBlockEv"}, err: BOOLEAN ]
+    /\ UNCHANGED reactorRunning
 
-OnStateTimeoutEv == \* after XXX ms if the FSM resides in the same state
-    inEvent' = [type |-> "stateTimeoutEv", stateName |-> state]
-
-
-\* the following three events are not specified, as the do not seem to be important    
-\* OnStatusUpdateTicker == \* every 10 ms
-\*    TRUE \* the implementation broadcasts the request to blockchain, we do nothing
+OnStateTimeoutEv == \* after XXX ms if the FSM resides in the same state, no precise time
+    /\ inEvent' = [type |-> "stateTimeoutEv", stateName |-> state]
+    /\ UNCHANGED reactorRunning
 
 \* messages from FSM
-\*OnSyncFinishedEv ==
-\*    TRUE
+OnSyncFinishedEv ==
+    /\ outEvent.type = "switchToConsensus"
+    /\ inEvent' = NoEvent
+    /\ reactorRunning' = FALSE \* stop the reactor
+
+
+\* We omit reaction on StatusUpdateTicker, as it is supposed to send a message to the blockchain, not FSM    
+\* OnStatusUpdateTicker == \* every 10 ms
+\*    TRUE \* the implementation broadcasts the request to blockchain, we do nothing
 
 
 NextReactor ==
@@ -233,6 +265,7 @@ NextReactor ==
     \/ OnPeerErrorEv
     \/ OnProcessReceivedBlockTicker
     \/ OnStateTimeoutEv
+    \/ OnSyncFinishedEv
 
 (* ------------------------------------------------------------------------------------------------ *)
 (* The behavior of the fast-sync state machine                                                      *)
@@ -256,14 +289,12 @@ InitFsm ==
 \* when in state init
 InInit ==
     /\ state = "init"
-    /\ \/ /\ inEvent.type = "startFSMEv"
-          /\ state' = "waitForPeer"
-          /\ outEvent' = [type |-> "sendStatusRequest"]
-          /\ UNCHANGED blockPool
-          
-       \/ /\ inEvent.type /= "startFSMEv"
-          /\ outEvent' = NoEvent
-          /\ UNCHANGED <<state, blockPool>>
+    /\  IF inEvent.type = "startFSMEv"
+        THEN  /\ state' = "waitForPeer"
+              /\ outEvent' = [type |-> "sendStatusRequest"]
+              /\ UNCHANGED blockPool
+        ELSE  /\ outEvent' = NoEvent
+              /\ UNCHANGED <<state, blockPool>>
 
 (* What happens in the state waitForPeer *)
 
@@ -432,16 +463,23 @@ InWaitForBlock ==
     \/ OnStopFSMInWaitForBlock
     \/ /\ state = "waitForBlock" /\ inEvent.type = "startFSMEv"
        /\ outEvent' = NoEvent
-       /\ UNCHANGED <<state, blockPool>> 
+       /\ UNCHANGED <<state, blockPool>>
+       
+\* when finished        
+InFinished ==
+    /\ state = "finished"
+    /\ outEvent' = [type |-> "switchToConsensus"]
+    /\ UNCHANGED <<state, blockPool>>
 
+\* Finally, this is how a transition by FSM looks like
 NextFsm ==
     \/ InInit
     \/ InWaitForPeer
     \/ InWaitForBlock
-    \/ state = "finished" /\ UNCHANGED <<state, blockPool, outEvent>>
+    \/ InFinished
 
 (* ------------------------------------------------------------------------------------------------*)
-(* The system is the composition of the non-deterministic reactor and the FSM *)
+(* The system is the composition of the non-deterministic reactor and the FSM                      *)
 (* ------------------------------------------------------------------------------------------------*)
 Init == InitReactor /\ InitFsm
 
@@ -500,6 +538,6 @@ GoodTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Sep 05 18:17:46 CEST 2019 by igor
+\* Last modified Mon Sep 09 18:55:23 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
