@@ -249,8 +249,8 @@ InitFsm ==
             maxPeerHeight |-> 0,
             blocks |-> [ h \in Heights |-> None ],          \* no peer has sent a block
             nextRequestHeight |-> startHeight,
-            ghostReceivedBlocks |-> {},
-            ghostProcessedHeights |-> {}
+            ghostReceivedBlocks |-> 0 .. (startHeight - 1),
+            ghostProcessedHeights |-> 0 .. (startHeight - 1)
          ]
 
 \* when in state init
@@ -500,6 +500,6 @@ GoodTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Aug 13 19:05:49 CEST 2019 by igor
+\* Last modified Thu Sep 05 18:17:46 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
