@@ -29,7 +29,9 @@ Heights == 1..maxHeight \* potential heights
 \* basic stuff
 Min(a, b) == IF a < b THEN a ELSE b
 
-VARIABLE  turn          \* who makes a step: the FSM or the Reactor
+\* the state of the scheduler
+VARIABLE  turn,          \* who makes a step: the FSM or the Reactor
+          slowPeers      \* the peers who respond slowly
 
 \* the state of the reactor: 
 VARIABLES inEvent,       \* an event from the reactor to the FSM
@@ -146,7 +148,11 @@ RemoveShortPeers(pool, h) ==
 \* pool.removeBadPeers calls removeShortPeers and removes the peers whose rate is bad.
 \* As we are not checking the rate here, we are just removing the short peers.
 \* Alternatively, we could drop the short peers and an arbitrary subset of the peers.
-RemoveBadPeers(pool) == RemoveShortPeers(pool, pool.height)
+RemoveBadPeers(pool) ==
+    LET newPool == RemoveShortPeers(pool, pool.height) IN
+    IF pool.peers \cap slowPeers /= {}
+    THEN RemovePeers(newPool, slowPeers \ pool.peers)
+    ELSE newPool 
 
 \* The peer has not been removed, nor invalid, nor the block is corrupt
 IsPeerAtHeight(pool, p, h) ==
@@ -493,7 +499,7 @@ NextFSM ==
 (* ------------------------------------------------------------------------------------------------*)
 (* The system is the composition of the non-deterministic reactor and the FSM                      *)
 (* ------------------------------------------------------------------------------------------------*)
-Init == turn = "FSM" /\ InitReactor /\ InitFSM
+Init == turn = "FSM" /\ InitReactor /\ InitFSM /\ slowPeers = {}
 
 FlipTurn == turn' = (IF turn = "FSM" THEN "Reactor" ELSE "FSM") 
 
@@ -501,9 +507,13 @@ Next == \* FSM and Reactor alternate their steps (synchronous composition introd
     /\ FlipTurn
     /\  IF turn = "FSM"
         THEN /\ NextFSM
-             /\ inEvent' = NoEvent /\ UNCHANGED reactorRunning
+             /\ inEvent' = NoEvent
+             /\ UNCHANGED <<reactorRunning, slowPeers>>
         ELSE /\ NextReactor
-             /\ outEvent' = NoEvent /\ UNCHANGED <<state, blockPool>>  
+             /\ outEvent' = NoEvent
+             \* one peer can get slower, so it should be detected as bad
+             /\ UNCHANGED slowPeers \/ \E p \in PeerIDs: slowPeers' = {p} \cup slowPeers
+             /\ UNCHANGED <<state, blockPool>>  
 
 (* ------------------------------------------------------------------------------------------------*)
 (* Expected properties *)
@@ -562,6 +572,6 @@ GoodTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Sep 09 22:39:58 CEST 2019 by igor
+\* Last modified Tue Sep 10 10:56:34 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
