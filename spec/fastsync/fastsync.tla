@@ -30,8 +30,7 @@ Heights == 1..maxHeight \* potential heights
 Min(a, b) == IF a < b THEN a ELSE b
 
 \* the state of the scheduler
-VARIABLE  turn,          \* who makes a step: the FSM or the Reactor
-          slowPeers      \* the peers who respond slowly
+VARIABLE  turn          \* who makes a step: the FSM or the Reactor
 
 \* the state of the reactor: 
 VARIABLES inEvent,       \* an event from the reactor to the FSM
@@ -149,10 +148,7 @@ RemoveShortPeers(pool, h) ==
 \* As we are not checking the rate here, we are just removing the short peers.
 \* Alternatively, we could drop the short peers and an arbitrary subset of the peers.
 RemoveBadPeers(pool) ==
-    LET newPool == RemoveShortPeers(pool, pool.height) IN
-    IF pool.peers \cap slowPeers /= {}
-    THEN RemovePeers(newPool, slowPeers \ pool.peers)
-    ELSE newPool 
+    RemoveShortPeers(pool, pool.height)
 
 \* The peer has not been removed, nor invalid, nor the block is corrupt
 IsPeerAtHeight(pool, p, h) ==
@@ -160,6 +156,13 @@ IsPeerAtHeight(pool, p, h) ==
     /\ h \in DOMAIN pool.blocks         \* the height has been assigned a peer
     /\ p = pool.blocks[h]               \* the block should have been sent by the peer p
     /\ h \in pool.ghostReceivedBlocks   \* the block has been received
+
+\* The peer has not been removed, nor invalid, nor the block is corrupt
+UnresponsivePeerAtHeight(pool, p, h) ==
+    /\ p \in pool.peers                 \* the peer is active
+    /\ h \in DOMAIN pool.blocks         \* the height has been assigned a peer
+    /\ p = pool.blocks[h]               \* the block should have been sent by the peer p
+    /\ h \notin pool.ghostReceivedBlocks   \* the block has not been received
        
 \* A summary of InvalidateFirstTwoBlocks
 InvalidateFirstTwoBlocks(pool, p1, p2) ==
@@ -223,7 +226,9 @@ OnSendBlockRequestTicker == \* every 10 ms, but our spec is asynchronous
     
 OnStatusResponseEv ==
     \* any status response can come from the blockchain, pick one non-deterministically
-    /\ inEvent' \in [ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights ]
+    \*/\ inEvent' \in [ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights ]
+    \* XXX: WORKAROUND, FIX LATER
+    /\ inEvent' \in [ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights \ {1} ]
     /\ UNCHANGED reactorRunning
     
 OnBlockResponseEv ==
@@ -263,6 +268,12 @@ OnSyncFinishedEv ==
     /\ inEvent' = NoEvent
     /\ reactorRunning' = FALSE \* stop the reactor
 
+\* a global timeout after waiting for too long, e.g., when a group of faulty peers is keeping us busy
+OnGlobalTimeoutTicker ==
+    /\ inEvent' = [type |-> "stopFSMEv"]
+    /\ UNCHANGED reactorRunning
+
+
 \* We omit reaction on StatusUpdateTicker, as it is supposed to send a message to the blockchain, not FSM    
 \* OnStatusUpdateTicker == \* every 10 ms
 \*    TRUE \* the implementation broadcasts the request to blockchain, we do nothing
@@ -276,6 +287,7 @@ NextReactor ==
     \/ OnProcessReceivedBlockTicker
     \/ OnStateTimeoutEv
     \/ OnSyncFinishedEv
+    \/ OnGlobalTimeoutTicker
 
 (* ------------------------------------------------------------------------------------------------ *)
 (* The behavior of the fast-sync state machine                                                      *)
@@ -339,6 +351,7 @@ OnStatusResponseInWaitForPeer ==
     /\ outEvent' = NoEvent 
     \* TODO: StopTimer? 
 
+\* TODO: replace with stopFSMEv?
 OnTimeoutInWaitForPeer ==
     /\ inEvent.type = "stateTimeoutEv"
     /\ state' = "finished"
@@ -373,8 +386,8 @@ OnMakeRequestsInWaitForBlock ==
         LET numPendingBlocks == Cardinality(pendingBlocks) IN \* len(blocks) in pool.go   
         \*  compute the next request height, see pool.go:194-201
         LET newNrh == Min(cleanPool.maxPeerHeight,
-                          cleanPool.nextRequestHeight + inEvent.maxNumRequests - numPendingBlocks) IN
-        LET heights == cleanPool.nextRequestHeight..newNrh - 1 IN
+                          cleanPool.nextRequestHeight + inEvent.maxNumRequests - numPendingBlocks - 1) IN
+        LET heights == cleanPool.nextRequestHeight..newNrh IN
         \* for each height h, assign a peer whose height is not lower than h
         LET newBlocks ==
               [h \in Heights |->
@@ -388,7 +401,7 @@ OnMakeRequestsInWaitForBlock ==
                         reqs |-> { [peerID |-> newBlocks[h],
                                     height |-> h] : h \in heights }]
         /\ blockPool' =
-            [cleanPool EXCEPT !.blocks = newBlocks, !.nextRequestHeight = newNrh]                            
+            [cleanPool EXCEPT !.blocks = newBlocks, !.nextRequestHeight = newNrh + 1]                            
         /\ state' = "waitForBlock"
         \* TODO: the implementation requires !(peer.NumPendingBlockRequests >= maxRequestsPerPeer)
         \* TODO: the implementation may report errSendQueueFull
@@ -452,19 +465,20 @@ OnPeerRemoveInWaitForBlock ==
     /\ outEvent' = NoEvent
 
 \* a timeout when waiting for a block
+\* TODO: replace with peerRemoveEv?
 OnTimeoutInWaitForBlock ==
     /\ inEvent.type = "stateTimeoutEv"
     /\ inEvent.stateName = state
     \* below we summarize pool.RemovePeerAtCurrentHeights
     /\ \/ \E p \in blockPool.peers:
-          /\ IsPeerAtHeight(blockPool, p, blockPool.height)
+          /\ UnresponsivePeerAtHeight(blockPool, p, blockPool.height)
           /\ blockPool' = RemovePeers(blockPool, {p}) \* remove the peer at current height
-       \/ /\ \A p \in blockPool.peers: ~IsPeerAtHeight(blockPool, p, blockPool.height)
+       \/ /\ \A p \in blockPool.peers: ~UnresponsivePeerAtHeight(blockPool, p, blockPool.height)
           /\ \/ \E q \in blockPool.peers:
-                /\ IsPeerAtHeight(blockPool, q, blockPool.height + 1)
+                /\ UnresponsivePeerAtHeight(blockPool, q, blockPool.height + 1)
                 /\ blockPool' = RemovePeers(blockPool, {q})    \* remove the peer at height + 1
              \* remove no peers, are we stuck here?
-             \/ /\ \A q \in blockPool.peers: ~IsPeerAtHeight(blockPool, q, blockPool.height + 1)
+             \/ /\ \A q \in blockPool.peers: ~UnresponsivePeerAtHeight(blockPool, q, blockPool.height + 1)
                 /\ UNCHANGED blockPool 
     \* resetStateTimer?
     /\ outEvent' = NoEvent
@@ -489,6 +503,12 @@ InFinished ==
     /\ outEvent' = [type |-> "switchToConsensus"]
     /\ UNCHANGED <<state, blockPool>>
 
+\* a global timeout after waiting for too long, when a group of faulty peers keeps us busy    
+GlobalTimeout ==
+    /\ inEvent.type = "GlobalTimeoutEv"
+    /\ state' = "finished"    
+    /\ UNCHANGED blockPool
+
 \* Finally, this is how a transition by FSM looks like
 NextFSM ==
     \/ InInit
@@ -499,7 +519,7 @@ NextFSM ==
 (* ------------------------------------------------------------------------------------------------*)
 (* The system is the composition of the non-deterministic reactor and the FSM                      *)
 (* ------------------------------------------------------------------------------------------------*)
-Init == turn = "FSM" /\ InitReactor /\ InitFSM /\ slowPeers = {}
+Init == turn = "FSM" /\ InitReactor /\ InitFSM
 
 FlipTurn == turn' = (IF turn = "FSM" THEN "Reactor" ELSE "FSM") 
 
@@ -508,11 +528,9 @@ Next == \* FSM and Reactor alternate their steps (synchronous composition introd
     /\  IF turn = "FSM"
         THEN /\ NextFSM
              /\ inEvent' = NoEvent
-             /\ UNCHANGED <<reactorRunning, slowPeers>>
+             /\ UNCHANGED reactorRunning
         ELSE /\ NextReactor
              /\ outEvent' = NoEvent
-             \* one peer can get slower, so it should be detected as bad
-             /\ UNCHANGED slowPeers \/ \E p \in PeerIDs: slowPeers' = {p} \cup slowPeers
              /\ UNCHANGED <<state, blockPool>>  
 
 (* ------------------------------------------------------------------------------------------------*)
@@ -557,6 +575,28 @@ GoodTermination ==
   (WF_turn(FlipTurn) /\ []NoFailuresAndTimeouts /\ FiniteResponse)
      => <>(state = "finished" /\ blockPool.height = blockPool.maxPeerHeight)
 
+\* This property is violated as a peer can send statusResponse, never provide the block, and then reconnect again.
+\* A counterexample works also for the case when an atacker keeps producing peers.
+ToughTermination ==
+  (WF_turn(FlipTurn)
+        /\ WF_inEvent(OnStateTimeoutEv) /\ WF_inEvent(OnRemovePeerEv)
+        /\ SF_<<inEvent>>(OnSendBlockRequestTicker)
+   ) \***
+     => <>(state = "finished")
+
+\* This is the termination property we like more and it holds true
+IncreaseHeight ==
+    blockPool'.height > blockPool.height \/ blockPool.height = maxHeight
+
+TougherTermination ==
+  (WF_turn(FlipTurn)
+        /\ WF_inEvent(OnStateTimeoutEv) /\ WF_inEvent(OnRemovePeerEv)
+        /\ SF_<<inEvent>>(OnSendBlockRequestTicker)
+        /\ (([]<> (<<IncreaseHeight>>_blockPool)) \/ <>(inEvent.type = "stopFSMEv"))
+   ) \***
+     => <>(state = "finished")
+
+
 (* ------------------------------------------------------------------------------------------------*)
 (* Questions in the back of my head *)
 (* ------------------------------------------------------------------------------------------------*)
@@ -572,6 +612,6 @@ GoodTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Sep 10 10:56:34 CEST 2019 by igor
+\* Last modified Tue Sep 10 15:32:54 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
