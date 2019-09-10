@@ -597,21 +597,8 @@ TougherTermination ==
      => <>(state = "finished")
 
 
-(* ------------------------------------------------------------------------------------------------*)
-(* Questions in the back of my head *)
-(* ------------------------------------------------------------------------------------------------*)
-
-(*
-  Q1. What if a faulty peer is reporting a very large height? The protocol is stuck forever?
-  
-  Q2. I do not see why pool.makeRequestBatch cannot produce duplicate heights in pool.plannedRequests.
-  
-  Q3. Why don't you clean up pool.plannedRequests in pool.go:180?  
- *)
-
-
 =============================================================================
 \* Modification History
-\* Last modified Tue Sep 10 15:32:54 CEST 2019 by igor
+\* Last modified Tue Sep 10 15:55:34 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
