@@ -12,6 +12,9 @@
  This specification focuses on the events that are received and produced by the FSM from the reactor.
  Importantly, we do not specify neither communication between the FSM and the peers,
  nor communication between the reactor and the peers.
+ 
+ Version 2. Using only one global timeout called stopFSMEv.
+ Version 1 used state timeouts that pose additional challenges in showing non-trivial termination.   
 *)
 
 EXTENDS Integers, FiniteSets
@@ -22,9 +25,9 @@ CONSTANTS
     ultimateHeight, \* the maximum height of the blockchain, an integer, e.g., 3
     numRequests     \* the number of requests made per batch, e.g., 2
 
-\* a few values
-None == -1          \* an undefined value
-Heights == 1..ultimateHeight \* potential heights
+\* a few definitions
+None == -1                      \* an undefined value
+Heights == 1..ultimateHeight    \* potential heights
 
 \* basic stuff
 Min(a, b) == IF a < b THEN a ELSE b
@@ -57,9 +60,9 @@ VARIABLE blockPool
             a map to collect the peers that have to deliver the blocks (one peer per block)
          nextRequestHeight: Int,
             the height at which the next request is going to be made
-         ghostReceivedBlocks: {Int},
+         receivedBlocks: {Int},
             a set of the heights for which the correct blocks were received, not in the implementation 
-         ghostProcessedHeights:
+         processedHeights:
             {Int}, a set of the heights that have been processed successfully, not in the implementation 
          \* the implementation contains plannedRequests that we omit here
     *)
@@ -149,14 +152,14 @@ IsPeerAtHeight(pool, p, h) ==
     /\ p \in pool.peers                 \* the peer is active
     /\ h \in DOMAIN pool.blocks         \* the height has been assigned a peer
     /\ p = pool.blocks[h]               \* the block should have been sent by the peer p
-    /\ h \in pool.ghostReceivedBlocks   \* the block has been received
+    /\ h \in pool.receivedBlocks   \* the block has been received
 
 \* The peer has not been removed, nor invalid, nor the block is corrupt
 UnresponsivePeerAtHeight(pool, p, h) ==
     /\ p \in pool.peers                 \* the peer is active
     /\ h \in DOMAIN pool.blocks         \* the height has been assigned a peer
     /\ p = pool.blocks[h]               \* the block should have been sent by the peer p
-    /\ h \notin pool.ghostReceivedBlocks   \* the block has not been received
+    /\ h \notin pool.receivedBlocks   \* the block has not been received
        
 \* A summary of InvalidateFirstTwoBlocks
 InvalidateFirstTwoBlocks(pool, p1, p2) ==
@@ -246,8 +249,8 @@ OnProcessReceivedBlockTicker == \* every 10 ms, again, no precise time here
     \* a block could be processed only if there are two blocks to do verification
     /\ LET h == blockPool.height IN
         /\ { h, h + 1 } \subseteq DOMAIN blockPool.blocks
-        /\ blockPool.blocks[h] /= None /\ h \in blockPool.ghostReceivedBlocks
-        /\ blockPool.blocks[h + 1] /= None /\ h + 1 \in blockPool.ghostReceivedBlocks
+        /\ blockPool.blocks[h] /= None /\ h \in blockPool.receivedBlocks
+        /\ blockPool.blocks[h + 1] /= None /\ h + 1 \in blockPool.receivedBlocks
     /\ inEvent' \in [ type: {"processedBlockEv"}, err: BOOLEAN ]
     /\ UNCHANGED reactorRunning
 
@@ -294,8 +297,8 @@ InitFSM ==
                 \* no peer has sent a block above startHeight, and we got blocks from peer 0 below startHeight
                 IF h < startHeight THEN 0 ELSE None ],
             nextRequestHeight |-> startHeight,
-            ghostReceivedBlocks |-> 0 .. (startHeight - 1),
-            ghostProcessedHeights |-> 0 .. (startHeight - 1)
+            receivedBlocks |-> 0 .. (startHeight - 1),
+            processedHeights |-> 0 .. (startHeight - 1)
          ]
 
     
@@ -399,7 +402,7 @@ OnBlockResponseInWaitForBlock ==
               /\ outEvent' = [type |-> "sendPeerError", peerIDs |-> {inEvent.peerID}]
         \* an OK block, the implementation adds it to the store
         ELSE  /\ outEvent' = NoEvent
-              /\ blockPool' = [blockPool EXCEPT !.ghostReceivedBlocks = @ \cup {inEvent.height}]
+              /\ blockPool' = [blockPool EXCEPT !.receivedBlocks = @ \cup {inEvent.height}]
     /\ state' = IF blockPool'.peers = {} THEN "waitForPeer" ELSE "waitForBlock"
 
 \* the block at the current height has been processed
@@ -421,9 +424,9 @@ OnProcessedBlockInWaitForBlock ==
               /\ LET newBlocks == [blockPool.blocks EXCEPT ![blockPool.height] = None] IN
                  LET newHeight == blockPool.height + 1 IN       \* advance the pool height
                  \* record the processed height for checking the temporal properties
-                 LET newGph == blockPool.ghostProcessedHeights \cup {blockPool.height} IN
+                 LET newGph == blockPool.processedHeights \cup {blockPool.height} IN
                  LET newPool == [blockPool EXCEPT
-                    !.blocks = newBlocks, !.height = newHeight, !.ghostProcessedHeights = newGph ]
+                    !.blocks = newBlocks, !.height = newHeight, !.processedHeights = newGph ]
                  IN
                  blockPool' = RemoveShortPeers(newPool, newHeight)
               \* pool.peers[peerID].RemoveBlock(pool.Height)
@@ -502,7 +505,7 @@ NeverFinishAbovePeerHeight ==
 
 \* This seems to be the safety requirement:
 \*   all blocks up to poolHeight have been processed 
-Safety == 0..blockPool.height - 1 \subseteq blockPool.ghostProcessedHeights
+Safety == 0..blockPool.height - 1 \subseteq blockPool.processedHeights
 
 \* before specifying liveness, we have to write constraints on the reactor events
 \* a good event
@@ -554,7 +557,8 @@ TougherTermination ==
 
 \* One more property for the case when we start at ultimateHeight.
 \* In this case, if the FSM is not receiving any further status updates from the peers,
-\* it cannot process a block. Thus, the protocol can only terminate by timeout.
+\* it cannot process a block at the maximum height.
+\* Thus, the protocol can only terminate by timeout.
 NoPeerUpdatesInWaitForBlock ==
     state = "waitForBlock"
       => inEvent.type \notin { "statusResponseEv", "peerRemoveEv" }
@@ -567,6 +571,6 @@ CornerCaseNonTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Sep 11 15:54:07 CEST 2019 by igor
+\* Last modified Wed Sep 11 16:14:18 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
