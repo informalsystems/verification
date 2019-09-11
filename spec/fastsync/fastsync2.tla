@@ -13,7 +13,7 @@
  Importantly, we do not specify neither communication between the FSM and the peers,
  nor communication between the reactor and the peers.
  
- Version 2. Using only one global timeout called stopFSMEv.
+ Version 2. Modeling only one global timeout called OnGlobalTimeoutTicker, we need fairness and eventually for that.
  Version 1 used state timeouts that pose additional challenges in showing non-trivial termination.   
 *)
 
@@ -270,14 +270,16 @@ OnGlobalTimeoutTicker ==
 \*    TRUE \* the implementation broadcasts the request to blockchain, we do nothing
 
 NextReactor ==
-    \/ OnSendBlockRequestTicker
-    \/ OnStatusResponseEv
-    \/ OnBlockResponseEv
-    \/ OnRemovePeerEv
-    \/ OnPeerErrorEv
-    \/ OnProcessReceivedBlockTicker
-    \/ OnSyncFinishedEv
-    \/ OnGlobalTimeoutTicker
+    IF ~reactorRunning
+    THEN inEvent' = NoEvent /\ UNCHANGED reactorRunning
+    ELSE  \/ OnSendBlockRequestTicker
+          \/ OnStatusResponseEv
+          \/ OnBlockResponseEv
+          \/ OnRemovePeerEv
+          \/ OnPeerErrorEv
+          \/ OnProcessReceivedBlockTicker
+          \/ OnSyncFinishedEv
+          \/ OnGlobalTimeoutTicker
 
 (* ------------------------------------------------------------------------------------------------ *)
 (* The behavior of the fast-sync state machine                                                      *)
@@ -510,7 +512,7 @@ Safety == 0..blockPool.height - 1 \subseteq blockPool.processedHeights
 \* before specifying liveness, we have to write constraints on the reactor events
 \* a good event
 NoFailuresAndTimeouts ==
-    \* no timeouts, no peer removal
+    \* no peer removal
     /\ inEvent.type /= "peerRemoveEv"
     \* no invalid blocks
     /\ inEvent.type = "blockResponseEv" => inEvent.block.valid
@@ -571,6 +573,6 @@ CornerCaseNonTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Sep 11 16:14:18 CEST 2019 by igor
+\* Last modified Wed Sep 11 16:50:23 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
