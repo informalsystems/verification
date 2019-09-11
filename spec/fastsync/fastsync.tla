@@ -249,7 +249,7 @@ OnPeerErrorEv ==
     \* XXX: we would need a queue instead of a single outEvent.
     \* However, this is compensated by OnPeerRemoveEv.
     /\ outEvent.type = "peerErrorEv"
-    /\ inEvent' = [ type |-> "peerRemoveEv", peerIDs |-> {outEvent.peerIDs} ]
+    /\ inEvent' = [ type |-> "peerRemoveEv", peerIDs |-> outEvent.peerIDs ]
     /\ UNCHANGED reactorRunning
     
 \* reactor.processBlocksRoutine
@@ -614,6 +614,6 @@ TougherTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Sep 11 16:35:12 CEST 2019 by igor
+\* Last modified Wed Sep 11 17:44:50 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor

@@ -1,5 +1,9 @@
 -------------------------------- MODULE fastsync2 --------------------------------
 (*
+ This is a version of fastsync that can be processed by APALACHE.
+ That is, it contains necessary type annotations and small fixes
+ in expressions like a..b.
+ 
  A specification of the fast sync finite-state machine that is introduced in:
  
  https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/docs/spec/reactors/block_sync/bcv1/impl-v1.md
@@ -211,7 +215,7 @@ NextChaosReactor ==
         THEN inEvent' \in InEvents \* the reactor produces an arbitrary input event to FSM
         ELSE inEvent' = NoEvent
 
-(* The benigh reactor that tries to follow the logic of reactor.go *)
+(* The benign reactor that tries to follow the logic of reactor.go *)
 \* the following actions are defined in reactor.poolRoutine
 OnSendBlockRequestTicker == \* every 10 ms, but our spec is asynchronous
     /\  LET unprocessedBlocks ==
@@ -241,7 +245,7 @@ OnPeerErrorEv ==
     \* XXX: we would need a queue instead of a single outEvent.
     \* However, this is compensated by OnPeerRemoveEv.
     /\ outEvent.type = "peerErrorEv"
-    /\ inEvent' = [ type |-> "peerRemoveEv", peerIDs |-> {outEvent.peerIDs} ]
+    /\ inEvent' = [ type |-> "peerRemoveEv", peerIDs |-> outEvent.peerIDs ]
     /\ UNCHANGED reactorRunning
     
 \* reactor.processBlocksRoutine
