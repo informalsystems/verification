@@ -12,6 +12,9 @@
  This specification focuses on the events that are received and produced by the FSM from the reactor.
  Importantly, we do not specify neither communication between the FSM and the peers,
  nor communication between the reactor and the peers.
+ 
+ Version 1. This version is modeling state timeouts by weak fairness, not only the global timeout.
+ As a result, TougherTermination seems to be too restrictive.
 *)
 
 EXTENDS Integers, FiniteSets
@@ -19,28 +22,29 @@ EXTENDS Integers, FiniteSets
 \* the protocol parameters
 CONSTANTS
     PeerIDs,        \* potential peer ids, a set of integers, e.g., 0..2
-    maxHeight,      \* the maximum height, an integer, e.g., 3
+    ultimateHeight, \* the maximum height of the blockchain, an integer, e.g., 3
     numRequests     \* the number of requests made per batch, e.g., 2
 
-\* a few values
-None == -1          \* an undefined value
-Heights == 1..maxHeight \* potential heights
+\* a few definitions
+None == -1                      \* an undefined value
+Heights == 1..ultimateHeight    \* potential heights
 
 \* basic stuff
 Min(a, b) == IF a < b THEN a ELSE b
+Max(a, b) == IF a > b THEN a ELSE b
 
-\* the state of the scheduler
+\* the state of the scheduler:
 VARIABLE  turn          \* who makes a step: the FSM or the Reactor
 
 \* the state of the reactor: 
 VARIABLES inEvent,       \* an event from the reactor to the FSM
           reactorRunning \* a Boolean, negation of stopProcessing in the implementation
                     
-\* the state of the FSM: https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/blockchain/v1/reactor_fsm.go
+\* the state of the FSM:
 VARIABLES state,         \* an FSM state
           outEvent       \* an event from the FSM to the reactor
 
-\* the block pool: https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/blockchain/v1/pool.go
+\* the block pool: 
 VARIABLE blockPool
     (*
        blockPool is a record that contains: 
@@ -56,9 +60,9 @@ VARIABLE blockPool
             a map to collect the peers that have to deliver the blocks (one peer per block)
          nextRequestHeight: Int,
             the height at which the next request is going to be made
-         ghostReceivedBlocks: {Int},
+         receivedBlocks: {Int},
             a set of the heights for which the correct blocks were received, not in the implementation 
-         ghostProcessedHeights:
+         processedHeights:
             {Int}, a set of the heights that have been processed successfully, not in the implementation 
          \* the implementation contains plannedRequests that we omit here
     *)
@@ -115,6 +119,7 @@ NoEvent == [type |-> "NoEvent"]
 (* ------------------------------------------------------------------------------------------------*)
 (* The behavior of the block pool, which keeps track of peers, block requests, and block responses *)
 (* See pool.go                                                                                     *)
+(* https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/blockchain/v1/pool.go *)
 (* ------------------------------------------------------------------------------------------------*)
 
 \* Find the maximal height among the (known) heights of the active peers
@@ -133,7 +138,7 @@ RemovePeers(pool, ids) ==
     \* update the maximum height 
     LET newMph == FindMaxPeerHeight(newPeers, pool.peerHeights) IN
     \* adjust the height of the next request, if it has lowered
-    LET newNrh == Min(newMph + 1, pool.nextRequestHeight) IN
+    LET newNrh == Max(pool.height, Min(newMph + 1, pool.nextRequestHeight)) IN
     [ pool EXCEPT !.peers = newPeers, !.blocks = newBlocks,
                   !.maxPeerHeight = newMph, !.nextRequestHeight = newNrh]
 
@@ -155,14 +160,14 @@ IsPeerAtHeight(pool, p, h) ==
     /\ p \in pool.peers                 \* the peer is active
     /\ h \in DOMAIN pool.blocks         \* the height has been assigned a peer
     /\ p = pool.blocks[h]               \* the block should have been sent by the peer p
-    /\ h \in pool.ghostReceivedBlocks   \* the block has been received
+    /\ h \in pool.receivedBlocks   \* the block has been received
 
 \* The peer has not been removed, nor invalid, nor the block is corrupt
 UnresponsivePeerAtHeight(pool, p, h) ==
     /\ p \in pool.peers                 \* the peer is active
     /\ h \in DOMAIN pool.blocks         \* the height has been assigned a peer
     /\ p = pool.blocks[h]               \* the block should have been sent by the peer p
-    /\ h \notin pool.ghostReceivedBlocks   \* the block has not been received
+    /\ h \notin pool.receivedBlocks   \* the block has not been received
        
 \* A summary of InvalidateFirstTwoBlocks
 InvalidateFirstTwoBlocks(pool, p1, p2) ==
@@ -194,7 +199,8 @@ UpdatePeer(pool, peerId, height) ==
             [pool EXCEPT !.peerHeights = newPh, !.maxPeerHeight = newMph]
 
 (* ------------------------------------------------------------------------------------------------ *)
-(* The behavior of the reactor.See reactor.go                                                       *)
+(* The behavior of the reactor. See reactor.go                                                      *)
+(* https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/blockchain/v1/reactor.go *)
 (*                                                                                                  *)
 (* There are two kinds of reactors:                                                                 *)
 (*   1. NextChaosReactor produces all possible events in any order.                                 *) 
@@ -226,9 +232,7 @@ OnSendBlockRequestTicker == \* every 10 ms, but our spec is asynchronous
     
 OnStatusResponseEv ==
     \* any status response can come from the blockchain, pick one non-deterministically
-    \*/\ inEvent' \in [ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights ]
-    \* XXX: WORKAROUND, FIX LATER
-    /\ inEvent' \in [ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights \ {1} ]
+    /\ inEvent' \in [ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights ]
     /\ UNCHANGED reactorRunning
     
 OnBlockResponseEv ==
@@ -253,8 +257,8 @@ OnProcessReceivedBlockTicker == \* every 10 ms, again, no precise time here
     \* a block could be processed only if there are two blocks to do verification
     /\ LET h == blockPool.height IN
         /\ { h, h + 1 } \subseteq DOMAIN blockPool.blocks
-        /\ blockPool.blocks[h] /= None /\ h \in blockPool.ghostReceivedBlocks
-        /\ blockPool.blocks[h + 1] /= None /\ h + 1 \in blockPool.ghostReceivedBlocks
+        /\ blockPool.blocks[h] /= None /\ h \in blockPool.receivedBlocks
+        /\ blockPool.blocks[h + 1] /= None /\ h + 1 \in blockPool.receivedBlocks
     /\ inEvent' \in [ type: {"processedBlockEv"}, err: BOOLEAN ]
     /\ UNCHANGED reactorRunning
 
@@ -279,19 +283,22 @@ OnGlobalTimeoutTicker ==
 \*    TRUE \* the implementation broadcasts the request to blockchain, we do nothing
 
 NextReactor ==
-    \/ OnSendBlockRequestTicker
-    \/ OnStatusResponseEv
-    \/ OnBlockResponseEv
-    \/ OnRemovePeerEv
-    \/ OnPeerErrorEv
-    \/ OnProcessReceivedBlockTicker
-    \/ OnStateTimeoutEv
-    \/ OnSyncFinishedEv
-    \/ OnGlobalTimeoutTicker
+    IF ~reactorRunning
+    THEN inEvent' = NoEvent /\ UNCHANGED reactorRunning
+    ELSE  \/ OnSendBlockRequestTicker
+          \/ OnStatusResponseEv
+          \/ OnBlockResponseEv
+          \/ OnRemovePeerEv
+          \/ OnPeerErrorEv
+          \/ OnProcessReceivedBlockTicker
+          \/ OnStateTimeoutEv
+          \/ OnSyncFinishedEv
+          \/ OnGlobalTimeoutTicker
 
 (* ------------------------------------------------------------------------------------------------ *)
 (* The behavior of the fast-sync state machine                                                      *)
 (* See reactor_fsm.go                                                                               *)
+(* https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/blockchain/v1/reactor_fsm.go *)
 (* ------------------------------------------------------------------------------------------------ *)
 InitFSM ==
     /\ state = "init"
@@ -302,10 +309,12 @@ InitFSM ==
             peers |-> {},
             peerHeights |-> [ p \in PeerIDs |-> None ],     \* no peer height is known
             maxPeerHeight |-> 0,
-            blocks |-> [ h \in Heights |-> None ],          \* no peer has sent a block
+            blocks |-> [ h \in Heights |->
+                \* no peer has sent a block above startHeight, and we got blocks from peer 0 below startHeight
+                IF h < startHeight THEN 0 ELSE None ],
             nextRequestHeight |-> startHeight,
-            ghostReceivedBlocks |-> 0 .. (startHeight - 1),
-            ghostProcessedHeights |-> 0 .. (startHeight - 1)
+            receivedBlocks |-> 0 .. (startHeight - 1),
+            processedHeights |-> 0 .. (startHeight - 1)
          ]
 
     
@@ -426,7 +435,7 @@ OnBlockResponseInWaitForBlock ==
               /\ outEvent' = [type |-> "sendPeerError", peerIDs |-> {inEvent.peerID}]
         \* an OK block, the implementation adds it to the store
         ELSE  /\ outEvent' = NoEvent
-              /\ blockPool' = [blockPool EXCEPT !.ghostReceivedBlocks = @ \cup {inEvent.height}]
+              /\ blockPool' = [blockPool EXCEPT !.receivedBlocks = @ \cup {inEvent.height}]
     /\ state' = IF blockPool'.peers = {} THEN "waitForPeer" ELSE "waitForBlock"
 
 \* the block at the current height has been processed
@@ -448,9 +457,9 @@ OnProcessedBlockInWaitForBlock ==
               /\ LET newBlocks == [blockPool.blocks EXCEPT ![blockPool.height] = None] IN
                  LET newHeight == blockPool.height + 1 IN       \* advance the pool height
                  \* record the processed height for checking the temporal properties
-                 LET newGph == blockPool.ghostProcessedHeights \cup {blockPool.height} IN
+                 LET newGph == blockPool.processedHeights \cup {blockPool.height} IN
                  LET newPool == [blockPool EXCEPT
-                    !.blocks = newBlocks, !.height = newHeight, !.ghostProcessedHeights = newGph ]
+                    !.blocks = newBlocks, !.height = newHeight, !.processedHeights = newGph ]
                  IN
                  blockPool' = RemoveShortPeers(newPool, newHeight)
               \* pool.peers[peerID].RemoveBlock(pool.Height)
@@ -536,7 +545,7 @@ Next == \* FSM and Reactor alternate their steps (synchronous composition introd
 (* ------------------------------------------------------------------------------------------------*)
 (* Expected properties *)
 (* ------------------------------------------------------------------------------------------------*)
-\* a sample property that triggers a counterexample in TLC
+\* a few simple properties that trigger counterexamples
 NeverFinishAtMax == [] (state = "finished" => blockPool.height < blockPool.maxPeerHeight)
 
 \* always finish at maximum height (we exclude timeouts that trivially violate the property)
@@ -551,7 +560,7 @@ NeverFinishAbovePeerHeight ==
 
 \* This seems to be the safety requirement:
 \*   all blocks up to poolHeight have been processed 
-Safety == 0..blockPool.height - 1 \subseteq blockPool.ghostProcessedHeights
+Safety == 0..blockPool.height - 1 \subseteq blockPool.processedHeights
 
 \* before specifying liveness, we have to write constraints on the reactor events
 \* a good event
@@ -568,37 +577,43 @@ FiniteResponse ==
          \notin { "statusResponseEv", "startFSMEv", "stopFSMEv", "blockResponseEv",
                   "processedBlockEv", "makeRequestsEv"})
     
-\* A liveness property that tells us that the protocol should terminate in the good case.
-\* (This property holds but it seems to be quite restrictive.)
-\* WF_turn(FlipTurn) makes sure that FSM and Reactor keep alternating.
-GoodTermination ==
-  (WF_turn(FlipTurn) /\ []NoFailuresAndTimeouts /\ FiniteResponse)
-     => <>(state = "finished" /\ blockPool.height = blockPool.maxPeerHeight)
+\* the protocol always has an option to terminate just by issuing timeout         
+NoGlobalTimeout == inEvent.type /= "stopFSMEv"
 
-\* This property is violated as a peer can send statusResponse, never provide the block, and then reconnect again.
+\* A liveness property that tells us that the protocol should terminate in the very good case.
+\* WF_turn(FlipTurn) makes sure that FSM and Reactor keep alternating their steps.
+GoodTermination ==
+  (WF_turn(FlipTurn) /\ []NoGlobalTimeout /\ []NoFailuresAndTimeouts /\ FiniteResponse)
+     => <>(state = "finished" /\ blockPool.height >= blockPool.maxPeerHeight)
+
+\* This property is violated as a peer can send statusResponse, never provide the block,
+\* and then reconnect again.
 \* A counterexample works also for the case when an atacker keeps producing peers.
-ToughTermination ==
+FalseTermination ==
   (WF_turn(FlipTurn)
-        /\ WF_inEvent(OnStateTimeoutEv) /\ WF_inEvent(OnRemovePeerEv)
+        /\ WF_inEvent(OnStateTimeoutEv)
         /\ SF_<<inEvent>>(OnSendBlockRequestTicker)
    ) \***
      => <>(state = "finished")
 
-\* This is the termination property we like more and it holds true
+\* TougherTermination is the termination property we like more and it holds true.
+
+\* When IncreaseHeight holds true, fastsync is progressing, unless it has hit the ceiling.
 IncreaseHeight ==
-    blockPool'.height > blockPool.height \/ blockPool.height = maxHeight
+    blockPool'.height > blockPool.height \/ blockPool'.height >= ultimateHeight
 
 TougherTermination ==
-  (WF_turn(FlipTurn)
-        /\ WF_inEvent(OnStateTimeoutEv) /\ WF_inEvent(OnRemovePeerEv)
-        /\ SF_<<inEvent>>(OnSendBlockRequestTicker)
+  (blockPool.height < ultimateHeight
+    /\ (WF_turn(FlipTurn)
+        /\ WF_inEvent(OnStateTimeoutEv)
+        /\ SF_inEvent(OnSendBlockRequestTicker)
         /\ (([]<> (<<IncreaseHeight>>_blockPool)) \/ <>(inEvent.type = "stopFSMEv"))
-   ) \***
+   )) \***
      => <>(state = "finished")
 
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Sep 10 15:55:34 CEST 2019 by igor
+\* Last modified Wed Sep 11 16:35:12 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
