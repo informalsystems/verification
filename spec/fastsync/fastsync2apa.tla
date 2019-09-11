@@ -1,4 +1,4 @@
--------------------------------- MODULE fastsyncAPA --------------------------------
+-------------------------------- MODULE fastsync2apa --------------------------
 (*
  This is a version of fastsync that can be processed by APALACHE.
  That is, it contains necessary type annotations and small fixes
