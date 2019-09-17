@@ -1,9 +1,5 @@
 -------------------------------- MODULE fastsync2 --------------------------------
 (*
- This is a version of fastsync that can be processed by APALACHE.
- That is, it contains necessary type annotations and small fixes
- in expressions like a..b.
- 
  A specification of the fast sync finite-state machine that is introduced in:
  
  https://github.com/tendermint/tendermint/blob/ancaz/blockchain_reactor_reorg/docs/spec/reactors/block_sync/bcv1/impl-v1.md
@@ -76,9 +72,9 @@ vars == <<turn, inEvent, reactorRunning, state, outEvent, blockPool>>
 (* The control states of the FSM *)
 States == { "init", "waitForPeer", "waitForBlock", "finished" }
 
-(* From the FSM's point of view, a block is completely abstract. We only know whether it is valid or not. *)
-Blocks == [ valid: BOOLEAN ]
-InvalidBlock == [ valid |-> FALSE]
+(* From the FSM's point of view, a block is completely abstract. We only know whether it is wellFormed or not. *)
+Blocks == [ wellFormed: BOOLEAN ]
+IllFormedBlock == [ wellFormed |-> FALSE]
 
 \* These are the types of input events that can be produced by the reactor to the FSM
 InEventTypes == { "startFSMEv", "statusResponseEv", "blockResponseEv",
@@ -399,7 +395,7 @@ OnStatusResponseInWaitForBlock ==
 \* a peer responded with a block
 OnBlockResponseInWaitForBlock ==
     /\ inEvent.type = "blockResponseEv"
-    /\  IF (~inEvent.block.valid
+    /\  IF (~inEvent.block.wellFormed
             \/ inEvent.height \notin DOMAIN blockPool.blocks
             \/ inEvent.peerID /= blockPool.blocks[inEvent.height]
             \/ inEvent.peerID \notin blockPool.peers)
@@ -437,6 +433,7 @@ OnProcessedBlockInWaitForBlock ==
                  blockPool' = RemoveShortPeers(newPool, newHeight)
               \* pool.peers[peerID].RemoveBlock(pool.Height)
               \* TODO: resetStateTimer?
+    \* TODO: check this condition in the implementation          
     /\ state' = IF blockPool'.height >= blockPool'.maxPeerHeight THEN "finished" ELSE "waitForBlock"
 
 \* a peer was disconnected or produced an error    
@@ -519,7 +516,7 @@ NoFailuresAndTimeouts ==
     \* no peer removal
     /\ inEvent.type /= "peerRemoveEv"
     \* no invalid blocks
-    /\ inEvent.type = "blockResponseEv" => inEvent.block.valid
+    /\ inEvent.type = "blockResponseEv" => inEvent.block.wellFormed
     /\ inEvent.type = "processedBlockEv" => ~inEvent.err
     
 \* the reactor can always kill progress by sending updates or useless messages
@@ -577,6 +574,6 @@ CornerCaseNonTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Sep 11 16:50:23 CEST 2019 by igor
+\* Last modified Tue Sep 17 15:58:15 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
