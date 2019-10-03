@@ -86,12 +86,12 @@ vars == <<turn, inEvent, reactorRunning, state, outEvent, blockPool>>
 (* The control states of the FSM *)
 States == { "init", "waitForPeer", "waitForBlock", "finished" }
 
-(* From the FSM's point of view, a block is completely abstract. We only know whether it is valid or not. *)
-Blocks == [ valid: BOOLEAN ]
-InvalidBlock == [ valid |-> FALSE]
+(* From the FSM's point of view, a block is completely abstract. We only know whether it is wellFormed or not. *)
+Blocks == [ wellFormed: BOOLEAN ]
+IllFormedBlock == [ wellFormed |-> FALSE]
 
 IET == \* APE
-    [type: STRING, peerID: Int, peerIDs: {Int}, height: Int, block: [valid: BOOLEAN],
+    [type: STRING, peerID: Int, peerIDs: {Int}, height: Int, block: [wellFormed: BOOLEAN],
      err: BOOLEAN, maxNumRequests: Int]    
 
 \* These are the types of input events that can be produced by the reactor to the FSM
@@ -101,17 +101,17 @@ InEventTypes == { "startFSMEv", "statusResponseEv", "blockResponseEv",
 \* These are all possible events that can be produced by the reactor as the input to FSM.
 \* Mimicking a combination of bReactorEvent and bReactorEventData.
 InEvents ==
-    [ type: {"startFSMEv", "stopFSMEv"} ]
+    ([ type: {"NoEvent", "startFSMEv", "stopFSMEv"}] <: {IET})
     \cup
-    [ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights]
+    ([ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights] <: {IET})
     \cup
-    [ type: {"blockResponseEv"}, peerID: PeerIDs, height: Heights, block: Blocks ]
+    ([ type: {"blockResponseEv"}, peerID: PeerIDs, height: Heights, block: Blocks ] <: {IET})
     \cup
-    [ type: {"peerRemoveEv"}, peerIDs: SUBSET PeerIDs \ {} ] \* NOTE: peerIDs is a set of ids
+    ([ type: {"peerRemoveEv"}, peerIDs: SUBSET PeerIDs (* \ ({} <: {{Int}})*)] <: {IET}) \* NOTE: peerIDs is a set of ids
     \cup
-    [ type: {"processedBlockEv"}, err: BOOLEAN ]
+    ([ type: {"processedBlockEv"}, err: BOOLEAN ] <: {IET})
     \cup
-    [ type: {"makeRequestsEv"}, maxNumRequests: {numRequests} ]
+    ([ type: {"makeRequestsEv"}, maxNumRequests: {numRequests} ] <: {IET})
 
 OET == \* APALACHE
     [type: STRING, reqs: {[peerID: Int, height: Int]}, peerIDs: {Int}]    
@@ -123,16 +123,16 @@ OutEventTypes == { "NoEvent", "sendStatusRequest", "sendBlockRequest",
 \* These are all possible events that can be produced by the FSM to reactor, reactor_fsm.go:354-360
 \* In contrast to the implementation, we group the requests together.
 OutEvents ==
-    [ type: {"NoEvent", "sendStatusRequest", "switchToConsensus"}]
+    ([ type: {"NoEvent", "sendStatusRequest", "switchToConsensus"}] <: {OET})
     \cup
-    [ type: {"sendBlockRequest"}, reqs: [peerID: PeerIDs, height: Heights]]
+    ([ type: {"sendBlockRequest"}, reqs: SUBSET [peerID: PeerIDs, height: Heights]] <: {OET})
     \cup
-    [ type: {"sendPeerError"}, peerID: SUBSET PeerIDs] \* we omit the error field 
+    ([ type: {"sendPeerError"}, peerIDs: SUBSET PeerIDs] <: {OET}) \* we omit the error field 
     \cup
-    [ type: {"resetStateTimer"}] \* we omit the timer and timeout fields
+    ([ type: {"resetStateTimer"}] <: {OET}) \* we omit the timer and timeout fields
 
 \* When FSM produces no event, it emits NoEvent    
-NoEvent == [type |-> "NoEvent"]                       
+NoEvent == [type |-> "NoEvent"]                        
 
 
 (* ------------------------------------------------------------------------------------------------*)
@@ -416,7 +416,7 @@ OnStatusResponseInWaitForBlock ==
 \* a peer responded with a block
 OnBlockResponseInWaitForBlock ==
     /\ inEvent.type = "blockResponseEv"
-    /\  IF (~inEvent.block.valid
+    /\  IF (~inEvent.block.wellFormed
             \/ inEvent.height \notin DOMAIN blockPool.blocks
             \/ inEvent.peerID /= blockPool.blocks[inEvent.height]
             \/ inEvent.peerID \notin blockPool.peers)
@@ -513,6 +513,24 @@ Next == \* FSM and Reactor alternate their steps (synchronous composition introd
 (* ------------------------------------------------------------------------------------------------*)
 (* Expected properties *)
 (* ------------------------------------------------------------------------------------------------*)
+
+TypeOK ==
+    /\ turn \in {"FSM", "Reactor"}
+    /\ inEvent \in InEvents
+    /\ reactorRunning \in BOOLEAN
+    /\ state \in States
+    /\ outEvent \in OutEvents
+    /\ blockPool \in [
+            height: Heights \cup {ultimateHeight + 1},
+            peers: SUBSET PeerIDs,
+            peerHeights: [PeerIDs -> Heights \cup {None}],
+            maxPeerHeight: Heights \cup {0},
+            blocks: [Heights -> PeerIDs \cup {None}],
+            nextRequestHeight: Heights \cup {ultimateHeight + 1},
+            receivedBlocks: SUBSET (Heights \cup {0}),
+            processedHeights: SUBSET (Heights \cup {0})
+       ]    
+
 \* a few simple properties that trigger counterexamples
 NeverFinishAtMax == [] (state = "finished" => blockPool.height < blockPool.maxPeerHeight)
 
@@ -536,7 +554,7 @@ NoFailuresAndTimeouts ==
     \* no peer removal
     /\ inEvent.type /= "peerRemoveEv"
     \* no invalid blocks
-    /\ inEvent.type = "blockResponseEv" => inEvent.block.valid
+    /\ inEvent.type = "blockResponseEv" => inEvent.block.wellFormed
     /\ inEvent.type = "processedBlockEv" => ~inEvent.err
     
 \* the reactor can always kill progress by sending updates or useless messages
@@ -594,6 +612,6 @@ CornerCaseNonTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Sep 11 17:37:18 CEST 2019 by igor
+\* Last modified Tue Sep 24 22:49:11 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor

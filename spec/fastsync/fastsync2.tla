@@ -83,7 +83,7 @@ InEventTypes == { "startFSMEv", "statusResponseEv", "blockResponseEv",
 \* These are all possible events that can be produced by the reactor as the input to FSM.
 \* Mimicking a combination of bReactorEvent and bReactorEventData.
 InEvents ==
-    [ type: {"startFSMEv", "stopFSMEv"} ]
+    [ type: {"NoEvent", "startFSMEv", "stopFSMEv"} ]
     \cup
     [ type: {"statusResponseEv"}, peerID: PeerIDs, height: Heights]
     \cup
@@ -104,9 +104,9 @@ OutEventTypes == { "NoEvent", "sendStatusRequest", "sendBlockRequest",
 OutEvents ==
     [ type: {"NoEvent", "sendStatusRequest", "switchToConsensus"}]
     \cup
-    [ type: {"sendBlockRequest"}, reqs: [peerID: PeerIDs, height: Heights]]
+    [ type: {"sendBlockRequest"}, reqs: SUBSET [peerID: PeerIDs, height: Heights]]
     \cup
-    [ type: {"sendPeerError"}, peerID: SUBSET PeerIDs] \* we omit the error field 
+    [ type: {"sendPeerError"}, peerIDs: SUBSET PeerIDs] \* we omit the error field 
     \cup
     [ type: {"resetStateTimer"}] \* we omit the timer and timeout fields
 
@@ -493,6 +493,24 @@ Next == \* FSM and Reactor alternate their steps (synchronous composition introd
 (* ------------------------------------------------------------------------------------------------*)
 (* Expected properties *)
 (* ------------------------------------------------------------------------------------------------*)
+
+TypeOK ==
+    /\ turn \in {"FSM", "Reactor"}
+    /\ inEvent \in InEvents
+    /\ reactorRunning \in BOOLEAN
+    /\ state \in States
+    /\ outEvent \in OutEvents
+    /\ blockPool \in [
+            height: Heights \cup {ultimateHeight + 1},
+            peers: SUBSET PeerIDs,
+            peerHeights: [PeerIDs -> Heights \cup {None}],
+            maxPeerHeight: Heights \cup {0},
+            blocks: [Heights -> PeerIDs \cup {None}],
+            nextRequestHeight: Heights \cup {ultimateHeight + 1},
+            receivedBlocks: SUBSET (Heights \cup {0}),
+            processedHeights: SUBSET (Heights \cup {0})
+       ]    
+
 \* a few simple properties that trigger counterexamples
 NeverFinishAtMax == [] (state = "finished" => blockPool.height < blockPool.maxPeerHeight)
 
@@ -574,6 +592,6 @@ CornerCaseNonTermination ==
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Sep 17 15:58:15 CEST 2019 by igor
+\* Last modified Tue Sep 24 22:47:53 CEST 2019 by igor
 \* Last modified Thu Aug 01 13:06:29 CEST 2019 by widder
 \* Created Fri Jun 28 20:08:59 CEST 2019 by igor
