@@ -91,7 +91,7 @@ IsCorrectPower(Flt, vp) ==
     
 (* This is what we believe is the assumption about failures in Tendermint *)     
 FaultAssumption(Flt, mth, bc) ==
-    \A h \in mth..Len(blockchain):
+    \A h \in mth..Len(bc):
         IsCorrectPower(Flt, bc[h].NextVP)
     
 
@@ -156,5 +156,5 @@ NeverFaulty == ~tooManyFaults
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Oct 11 16:21:32 CEST 2019 by igor
+\* Last modified Fri Oct 11 16:50:58 CEST 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor
