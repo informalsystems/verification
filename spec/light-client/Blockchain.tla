@@ -127,34 +127,60 @@ Init ==
           IN
           blockchain = <<genesis>>
 
+(********************* BLOCKCHAIN ACTIONS ********************************)
+          
+(*
+  The blockchain may progress by adding one more block, provided that:
+     (1) The ultimate height has not been reached yet, and
+     (2) The faults are within the bounds.
+ *)
+AdvanceChain ==
+  /\ height < ULTIMATE_HEIGHT /\ ~tooManyFaults
+  /\ AppendBlock
+  /\ UNCHANGED <<minTrustedHeight, tooManyFaults, Faulty>>
+
+(*
+  As time is passing, the minimal trusted height may increase.
+  As a result, the blockchain may move out of the faulty zone.
+  *)
+AdvanceTime ==
+  /\ minTrustedHeight' \in minTrustedHeight..ULTIMATE_HEIGHT
+  /\ tooManyFaults' = ~FaultAssumption(Faulty, minTrustedHeight', blockchain)
+  /\ UNCHANGED <<height, blockchain, Faulty>>
+
+(* One more process fails. As a result, the blockchain may move into the faulty zone. *)
+OneMoreFault ==
+  /\ \E n \in AllNodes:
+      /\ Faulty' = Faulty \cup {n}
+      /\ tooManyFaults' = ~FaultAssumption(Faulty', minTrustedHeight, blockchain)
+  /\ UNCHANGED <<height, minTrustedHeight, blockchain>>
+
+(* stuttering at the end of the blockchain *)
+StutterInTheEnd == 
+  height = ULTIMATE_HEIGHT /\ UNCHANGED vars
+
 (* Let the blockchain to make progress *)
 Next ==
-  (* The blockchain may progress by adding one more block, provided that:
-     (1) The ultimate height has not been reached yet, and
-     (2) The faults are within the bounds. *)
-  \/ /\ height < ULTIMATE_HEIGHT /\ ~tooManyFaults
-     /\ AppendBlock
-     /\ UNCHANGED <<minTrustedHeight, tooManyFaults, Faulty>>
-  (* As time is passing, the minimal trusted height may increase.
-     As a result, the blockchain may move out of the faulty zone. *)
-  \/ /\ minTrustedHeight' \in minTrustedHeight..ULTIMATE_HEIGHT
-     /\ tooManyFaults' = ~FaultAssumption(Faulty, minTrustedHeight', blockchain)
-     /\ UNCHANGED <<height, blockchain, Faulty>>
-  (* One more process fails. As a result, the blockchain may move into the faulty zone. *)
-  \/ /\ \E n \in AllNodes:
-        /\ Faulty' = Faulty \cup {n}
-        /\ tooManyFaults' = ~FaultAssumption(Faulty', minTrustedHeight, blockchain)
-     /\ UNCHANGED <<height, minTrustedHeight, blockchain>>
-  (* stuttering at the end of the blockchain *)
-  \/ height = ULTIMATE_HEIGHT /\ UNCHANGED vars
-
+  \/ AdvanceChain
+  \/ AdvanceTime
+  \/ OneMoreFault
+  \/ StutterInTheEnd
 
 (* Properties that can be checked with TLC, to see interesting behaviors *)
 
 (* Check this to see how the blockchain can jump into the faulty zone *)
 NeverFaulty == ~tooManyFaults
 
+(* False property: it should be always possible to add one more block *)
+NeverStuck == ENABLED AdvanceChain
+
+(* False property: it should be always possible to add one more block *)
+NeverStuckUnlessFailed ==
+  \/ tooManyFaults
+  \/ height = ULTIMATE_HEIGHT
+  \/ ENABLED AdvanceChain
+
 =============================================================================
 \* Modification History
-\* Last modified Fri Oct 11 16:50:58 CEST 2019 by igor
+\* Last modified Mon Oct 14 15:40:59 CEST 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor
