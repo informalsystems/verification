@@ -7,6 +7,8 @@
  *)
 EXTENDS Integers, Sequences
 
+Min(a, b) == IF a < b THEN a ELSE b
+
 CONSTANT
   AllNodes,
     (* a set of all nodes that can act as validators (correct and faulty) *)
@@ -82,7 +84,7 @@ PowerOfSet(vp, Nodes) ==
 (* Is the voting power correct,
    that is, more than 2/3 of the voting power belongs to the correct processes? *)
 IsCorrectPower(Flt, vp) ==
-    LET CV == Corr \intersect DOMAIN vp
+    LET CV == (AllNodes \ Flt) \intersect DOMAIN vp
         FV == Flt \intersect DOMAIN vp
         CP == PowerOfSet(vp, CV)
         FP == PowerOfSet(vp, FV)
@@ -114,7 +116,7 @@ AppendBlock ==
 (* Initialize the blockchain *)
 Init ==
   /\ tooManyFaults = FALSE
-  /\ height = 0
+  /\ height = 1
   /\ minTrustedHeight \in 1..ULTIMATE_HEIGHT
   /\ Faulty = {}
   (* pick a genesis block of all nodes where next correct validators have >2/3 of power *)
@@ -122,7 +124,7 @@ Init ==
        \E NextVP \in [NextV -> Powers]:
       /\ IsCorrectPower(Faulty, NextVP)
       /\  LET VP == [n \in Corr |-> 1] 
-              genesis == [ height |-> 0, lastCommit |-> {},
+              genesis == [ height |-> 1, lastCommit |-> {},
                            VP |-> VP, NextVP |-> NextVP]
           IN
           blockchain = <<genesis>>
@@ -144,7 +146,7 @@ AdvanceChain ==
   As a result, the blockchain may move out of the faulty zone.
   *)
 AdvanceTime ==
-  /\ minTrustedHeight' \in minTrustedHeight..ULTIMATE_HEIGHT
+  /\ minTrustedHeight' \in (minTrustedHeight + 1) .. Min(height + 1, ULTIMATE_HEIGHT)
   /\ tooManyFaults' = ~FaultAssumption(Faulty, minTrustedHeight', blockchain)
   /\ UNCHANGED <<height, blockchain, Faulty>>
 
@@ -166,21 +168,33 @@ Next ==
   \/ OneMoreFault
   \/ StutterInTheEnd
 
-(* Properties that can be checked with TLC, to see interesting behaviors *)
+
+(* Invariant: it should be always possible to add one more block unless:
+  (1) either there are too many faults,
+  (2) or the bonding period of the last transaction has expired, so we are stuck.
+ *)
+NeverStuck ==
+  \/ tooManyFaults
+  \/ height = ULTIMATE_HEIGHT
+  \/ minTrustedHeight > height \* the bonding period has expired
+  \/ ENABLED AdvanceChain
+
+(* False properties that can be checked with TLC, to see interesting behaviors *)
 
 (* Check this to see how the blockchain can jump into the faulty zone *)
 NeverFaulty == ~tooManyFaults
 
-(* False property: it should be always possible to add one more block *)
-NeverStuck == ENABLED AdvanceChain
+(* False: it should be always possible to add one more block *)
+NeverStuckFalse1 ==
+  ENABLED AdvanceChain
 
-(* False property: it should be always possible to add one more block *)
-NeverStuckUnlessFailed ==
+(* False: it should be always possible to add one more block *)
+NeverStuckFalse2 ==
   \/ tooManyFaults
   \/ height = ULTIMATE_HEIGHT
   \/ ENABLED AdvanceChain
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Oct 14 15:40:59 CEST 2019 by igor
+\* Last modified Mon Oct 14 17:14:04 CEST 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor
