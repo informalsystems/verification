@@ -82,6 +82,12 @@ PowerOfSet(vp, Nodes) ==
         (* ASSERT(node \in DOMAIN vp) *)
         vp[node] + PowerOfSet(vp, Nodes \ {node})
 
+TwoThirds(vp, set) ==
+    LET TP == PowerOfSet(vp, DOMAIN vp)
+        SP == PowerOfSet(vp, set)
+    IN
+    3 * SP > 2 * TP 
+
 IsCorrectPowerForSet(Flt, vp, set) ==
     LET FV == Flt \intersect set
         CV == set \ FV
@@ -110,7 +116,7 @@ AppendBlock ==
      \E NextVP \in [NextV -> Powers]:
     LET new == [ height |-> height + 1, lastCommit |-> lastCommit,
                  VP |-> last.NextVP, NextVP |-> NextVP ] IN
-    /\ IsCorrectPowerForSet(Faulty, last.VP, lastCommit)              
+    /\ TwoThirds(last.VP, lastCommit)
     /\ IsCorrectPower(Faulty, NextVP) \* the correct validators have >2/3 of power
     /\ blockchain' = Append(blockchain, new)
     /\ height' = height + 1
@@ -202,5 +208,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Oct 17 11:12:35 CEST 2019 by igor
+\* Last modified Thu Oct 17 11:23:47 CEST 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor
