@@ -33,15 +33,16 @@ BlockHeaders == [
     \* the nodes who have voted on the previous block, the set itself instead of a hash
   (* in the implementation, only the hashes of V and NextV are stored in a block,
      as V and NextV are stored in the application state *) 
-  VP: UNION {Nodes \in SUBSET AllNodes \ {}: [Nodes -> Powers]},
+  VP: UNION {Nodes \in SUBSET AllNodes \ {{}}: [Nodes -> Powers]},
     \* the validators of this block together with their voting powers,
     \* i.e., a multi-set. We store the validators instead of the hash.
-  NextVP: UNION {Nodes \in SUBSET AllNodes \ {}: [Nodes -> Powers]}
+  NextVP: UNION {Nodes \in SUBSET AllNodes \ {{}}: [Nodes -> Powers]}
     \* the validators of the next block together with their voting powers,
     \* i.e., a multi-set. We store the next validators instead of the hash.
 ]
 
 (* A signed header is just a header together with a set of commits *)
+\* TODO: Commits is the set of PRECOMMIT messages
 SignedHeaders == BlockHeaders \X Commits
 
 VARIABLES
@@ -81,53 +82,54 @@ PowerOfSet(vp, Nodes) ==
         (* ASSERT(node \in DOMAIN vp) *)
         vp[node] + PowerOfSet(vp, Nodes \ {node})
 
-(* Is the voting power correct,
-   that is, more than 2/3 of the voting power belongs to the correct processes? *)
-IsCorrectPower(Flt, vp) ==
-    LET CV == (AllNodes \ Flt) \intersect DOMAIN vp
-        FV == Flt \intersect DOMAIN vp
+IsCorrectPowerForSet(Flt, vp, set) ==
+    LET FV == Flt \intersect set
+        CV == set \ FV
         CP == PowerOfSet(vp, CV)
         FP == PowerOfSet(vp, FV)
     IN
     CP > 2 * FP \* 2/3 rule. Note: when FP = 0, this implies CP > 0.
+
+(* Is the voting power correct,
+   that is, more than 2/3 of the voting power belongs to the correct processes? *)
+IsCorrectPower(Flt, vp) ==
+    IsCorrectPowerForSet(Flt, vp, DOMAIN vp)
     
 (* This is what we believe is the assumption about failures in Tendermint *)     
 FaultAssumption(Flt, mth, bc) ==
     \A h \in mth..Len(bc):
         IsCorrectPower(Flt, bc[h].NextVP)
-    
 
 (* Append a new block on the blockchain.
    Importantly, more than 2/3 of voting power in the next set of validators
    belongs to the correct processes. *)       
 AppendBlock ==
   LET last == blockchain[Len(blockchain)] IN
-  \E lastCommit \in Commits,
-     NextV \in SUBSET AllNodes \ {}:
+  \E lastCommit \in (SUBSET (DOMAIN last.VP)) \ {{}},
+     NextV \in SUBSET AllNodes \ {{}}:
      \E NextVP \in [NextV -> Powers]:
     LET new == [ height |-> height + 1, lastCommit |-> lastCommit,
                  VP |-> last.NextVP, NextVP |-> NextVP ] IN
+    /\ IsCorrectPowerForSet(Faulty, last.VP, lastCommit)              
     /\ IsCorrectPower(Faulty, NextVP) \* the correct validators have >2/3 of power
     /\ blockchain' = Append(blockchain, new)
     /\ height' = height + 1
-    /\ FaultAssumption(Faulty, minTrustedHeight, blockchain')
-        \* we should choose validators in such a way that there are <1/3 faults
 
 (* Initialize the blockchain *)
 Init ==
   /\ tooManyFaults = FALSE
   /\ height = 1
-  /\ minTrustedHeight \in 1..ULTIMATE_HEIGHT
+  /\ minTrustedHeight = 1
   /\ Faulty = {}
   (* pick a genesis block of all nodes where next correct validators have >2/3 of power *)
-  /\ \E NextV \in SUBSET AllNodes \ {}:
+  /\ \E NextV \in SUBSET AllNodes:
        \E NextVP \in [NextV -> Powers]:
-      /\ IsCorrectPower(Faulty, NextVP)
-      /\  LET VP == [n \in Corr |-> 1] 
-              genesis == [ height |-> 1, lastCommit |-> {},
-                           VP |-> VP, NextVP |-> NextVP]
-          IN
-          blockchain = <<genesis>>
+         LET VP == [n \in AllNodes |-> 1] 
+             genesis == [ height |-> 1, lastCommit |-> {},
+                          VP |-> VP, NextVP |-> NextVP]
+         IN
+         /\ NextV /= {}
+         /\ blockchain = <<genesis>>
 
 (********************* BLOCKCHAIN ACTIONS ********************************)
           
@@ -152,7 +154,7 @@ AdvanceTime ==
 
 (* One more process fails. As a result, the blockchain may move into the faulty zone. *)
 OneMoreFault ==
-  /\ \E n \in AllNodes:
+  /\ \E n \in AllNodes \ Faulty:
       /\ Faulty' = Faulty \cup {n}
       /\ tooManyFaults' = ~FaultAssumption(Faulty', minTrustedHeight, blockchain)
   /\ UNCHANGED <<height, minTrustedHeight, blockchain>>
@@ -179,6 +181,10 @@ NeverStuck ==
   \/ minTrustedHeight > height \* the bonding period has expired
   \/ ENABLED AdvanceChain
 
+NextVPNonEmpty ==
+    \A h \in 1..Len(blockchain):
+      DOMAIN blockchain[h].NextVP /= {}
+
 (* False properties that can be checked with TLC, to see interesting behaviors *)
 
 (* Check this to see how the blockchain can jump into the faulty zone *)
@@ -196,5 +202,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Oct 14 17:14:04 CEST 2019 by igor
+\* Last modified Thu Oct 17 11:12:35 CEST 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor
