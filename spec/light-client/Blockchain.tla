@@ -33,10 +33,10 @@ BlockHeaders == [
     \* the nodes who have voted on the previous block, the set itself instead of a hash
   (* in the implementation, only the hashes of V and NextV are stored in a block,
      as V and NextV are stored in the application state *) 
-  VP: UNION {Nodes \in SUBSET AllNodes \ {{}}: [Nodes -> Powers]},
+  VP: UNION {[Nodes -> Powers]: Nodes \in SUBSET AllNodes \ {{}}},
     \* the validators of this block together with their voting powers,
     \* i.e., a multi-set. We store the validators instead of the hash.
-  NextVP: UNION {Nodes \in SUBSET AllNodes \ {{}}: [Nodes -> Powers]}
+  NextVP: UNION {[Nodes -> Powers]: Nodes \in SUBSET AllNodes \ {{}}}
     \* the validators of the next block together with their voting powers,
     \* i.e., a multi-set. We store the next validators instead of the hash.
 ]
@@ -208,5 +208,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Oct 17 11:23:47 CEST 2019 by igor
+\* Last modified Thu Oct 17 12:28:38 CEST 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor
