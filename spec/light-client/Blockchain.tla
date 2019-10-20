@@ -106,6 +106,15 @@ FaultAssumption(Flt, mth, bc) ==
     \A h \in mth..Len(bc):
         IsCorrectPower(Flt, bc[h].NextVP)
 
+
+(* A signed header whose commit coincides with the last commit of a block *)
+SoundSignedHeaders(ht) ==
+    { <<h, c>> \in SignedHeaders:
+        \/ h = blockchain[ht]
+        \/ c \subseteq Faulty
+    }
+
+
 (* Append a new block on the blockchain.
    Importantly, more than 2/3 of voting power in the next set of validators
    belongs to the correct processes. *)       
@@ -208,5 +217,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Oct 17 12:28:38 CEST 2019 by igor
+\* Last modified Sat Oct 19 09:43:20 CEST 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor

@@ -41,7 +41,8 @@ BC == INSTANCE Blockchain WITH tooManyFaults <- tooManyFaults, height <- height,
 
 CheckSupport(heightToTrust, heightToVerify) ==
   LET th == blockchain[heightToTrust] IN
-    \E sheader \in BC!SignedHeaders: \* received from the full node
+    \E sheader \in BC!SoundSignedHeaders(heightToVerify):
+             \* received from the full node
         /\ sheader[1].height = heightToVerify
         /\ checkedHeader' = sheader
         /\  IF minTrustedHeight > heightToTrust
@@ -84,10 +85,13 @@ Next ==
 
 
 (* The properties to check *)
+Correctness ==
+    finished => (verdict => (checkedHeader[1] = blockchain[TO_VERIFY_HEIGHT]))
 
-Correctness == verdict = TRUE => checkedHeader[1] = blockchain[TO_VERIFY_HEIGHT]
+\*Correctness ==
+\*    finished => (verdict <=> (checkedHeader[1] = blockchain[TO_VERIFY_HEIGHT]))
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Oct 17 12:34:21 CEST 2019 by igor
+\* Last modified Sun Oct 20 11:13:53 CEST 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
