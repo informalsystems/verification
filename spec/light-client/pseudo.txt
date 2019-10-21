@@ -1,0 +1,31 @@
+(*
+func OneStep(stack, lh, rh, isLeft) bool {
+    bool verdict = false;
+    if (CheckSupport(lh, rh) {
+        verdict = true;
+    } else {
+      if rh == lh + 1 {
+        verdict = false;
+        if (isLeft) {
+            stack.pop();
+        }
+      } else {
+        stack.push(<<(lh + rh) / 2, rh, false>>);
+        stack.push(<<lh, (lh + rh) / 2, true>>);
+      }
+    }
+    return verdict;
+}
+
+func Bisection(h1, h2) bool {
+  stack = OneStep(h1, h2, false);
+  verdict = false;
+  while (!stack.isEmpty()) {
+    <<lh, rh, isLeft>> = stack.pop();
+    verdict = OneStep(stack, lh, rh, isLeft);
+  }
+  return verdict;
+}
+
+*)
+
