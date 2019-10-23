@@ -107,11 +107,12 @@ FaultAssumption(Flt, mth, bc) ==
         IsCorrectPower(Flt, bc[h].NextVP)
 
 
-(* A signed header whose commit coincides with the last commit of a block *)
+(* A signed header whose commit coincides with the last commit of a block,
+   unless the commits are made by the faulty nodes *)
 SoundSignedHeaders(ht) ==
     { <<h, c>> \in SignedHeaders:
         \/ h = blockchain[ht]
-        \/ c \subseteq Faulty
+        \/ c \subseteq Faulty /\ h.height = ht
     }
 
 
@@ -217,5 +218,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Sat Oct 19 09:43:20 CEST 2019 by igor
+\* Last modified Tue Oct 22 23:12:01 CEST 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor

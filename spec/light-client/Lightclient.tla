@@ -77,7 +77,7 @@ EnvInit ==
 EnvNext ==
     \/ /\ state = "init"
        \* modeling feature, do not start the client before the blockchain is constructed
-       /\ height > TO_VERIFY_HEIGHT
+       /\ height >= TO_VERIFY_HEIGHT
        /\ inEvent' = [type |-> "start", heightToVerify |-> TO_VERIFY_HEIGHT]
     \/ /\ state = "working"
        /\ outEvent.type = "requestHeader"
@@ -106,8 +106,8 @@ RequestHeaderForTopRequest(stack) ==
     ELSE  LET top == Head(stack)
               heightToRequest ==
                 IF top.isLeft
-                THEN top.endHeight
-                ELSE top.startHeight
+                THEN top.endHeight      \* the pivot is on the right
+                ELSE top.startHeight    \* the pivot is on the left
           IN
           [type |-> "requestHeader", height |-> heightToRequest]
 
@@ -121,7 +121,7 @@ OnStart ==
                              DOMAIN blockchain[TRUSTED_HEIGHT].VP >> }
         (* The only request on the stack ("right", h1, h2).
            It is labelled as `right` to disable short-circuiting *)
-    /\ LET initStack == << [isLeft |-> FALSE,
+    /\ LET initStack == << [isLeft |-> TRUE,
                            startHeight |-> TRUSTED_HEIGHT,
                            endHeight |-> inEvent.heightToVerify] >>
        IN           
@@ -130,7 +130,14 @@ OnStart ==
 
 (* Check whether we can trust the signedHdr based on trustedHdr
    following the trusting period method.
-   This operator is similar to CheckSupport in the English spec.*)
+   This operator is similar to CheckSupport in the English spec.
+   
+   The parameters have the following meanings:
+   - heightToTrust is the height of the trusted header
+   - heightToVerify is the height of the header to be verified
+   - trustedHdr is the trusted header (not a signed header)
+   - signedHdr is the signed header to verify (including commits)
+   *)
 CheckSupport(heightToTrust, heightToVerify, trustedHdr, signedHdr) ==
     IF minTrustedHeight > heightToTrust \* outside of the trusting period
         \/ ~(signedHdr[2] \subseteq (DOMAIN signedHdr[1].VP)) \* signed by other nodes
@@ -154,17 +161,18 @@ OneStepOfBisection(storedHdrs) ==
     LET topReq == Head(requestStack)
         lh == topReq.startHeight
         rh == topReq.endHeight
-        lhdr == CHOOSE hdr \in storedHdrs: hdr.height = lh
-        rhdr == CHOOSE hdr \in storedHdrs: hdr.height = rh
+        lhdr == CHOOSE hdr \in storedHdrs: hdr[1].height = lh
+        rhdr == CHOOSE hdr \in storedHdrs: hdr[1].height = rh
     IN
-    IF CheckSupport(lh, rh, lhdr, rhdr)
+    \* pass only the header lhdr[1] and signed header rhdr
+    IF CheckSupport(lh, rh, lhdr[1], rhdr)
         (* The header can be trusted, pop the request and return true *)
     THEN <<TRUE, Tail(requestStack)>>
     ELSE IF lh + 1 = rh \* sequential verification
         THEN (*
              Sequential verification tells us that the header cannot be trusted:
              If the search request was scheduled as a left branch, then
-             (1) pop the top request, and
+             (1) pop the top request (the left branch), and
              (2) pop the second top request, which is the request for the right branch.
              Otherwise, pop only the top request.
              This is the optimization that is introduced in the English spec.
@@ -193,8 +201,10 @@ OnResponseHeader ==
      IN
       /\ requestStack' = newStack
       /\ IF newStack = << >>
-         THEN outEvent' = [type |-> "finished", verdict |-> verdict]
-         ELSE outEvent' = RequestHeaderForTopRequest(newStack)  
+         THEN /\ outEvent' = [type |-> "finished", verdict |-> verdict]
+              /\ state' = "finished"
+         ELSE /\ outEvent' = RequestHeaderForTopRequest(newStack)
+              /\ state' = "working"  
 
 LCInit ==
     /\ state = "init"
@@ -216,26 +226,42 @@ Next ==
 
 
 (* The properties to check *)
+\* check this property to get an example of a terminating light client
+NeverStart == state /= "working"
+
+NeverFinish == state /= "finished"
+
 
 \* Correctness states that all the obtained headers are exactly like in the blockchain
 Correctness ==
     outEvent.type = "finished" /\ outEvent.verdict = TRUE
-        => (\A hdr \in storedHeaders: hdr = blockchain[hdr.height])
+        => (\A hdr \in storedHeaders: hdr[1] = blockchain[hdr[1].height])
 
-\* TODO: add if-and-only-if to correctness
+Precision ==
+    outEvent.type = "finished" /\ outEvent.verdict = FALSE
+        => (\E hdr \in storedHeaders: hdr[1] /= blockchain[hdr[1].height])
+
+\* TODO: specify Completeness and Accuracy from the English spec
 
 (************************** MODEL CHECKING ************************************)
 (*
+  # Experiment 1.
   Run TLC with the following parameters:
   
-  ULTIMATE_HEIGHT <- 5,
+  ULTIMATE_HEIGHT <- 3,
   MAX_POWER <- 1,
-  TO_VERIFY_HEIGHT <- 4,
+  TO_VERIFY_HEIGHT <- 3,
   TRUSTED_HEIGHT <- 1,
   AllNodes <- { A_p1, A_p2, A_p3, A_p4 } \* choose symmetry reduction for model values
+  
+  Did not finish after 2:30 hours (> 5.3M states):
+  
+   * Deadlocks: a deadlock occurs when minTrustedHeight > height.
+   * Correctness: ???
+   * Precision: ???
  *)
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Oct 21 23:07:28 CEST 2019 by igor
+\* Last modified Wed Oct 23 08:56:35 CEST 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
