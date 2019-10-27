@@ -1,4 +1,5 @@
-# Specification and verification of protocols and implementations
+# Specification and Verification 
 
- * [spec](./spec) contains TLA+ specifications
- * etc.
+**WARNING**: This work is under heavy development and does not yet represent
+correct specification or verification of anything.
+
