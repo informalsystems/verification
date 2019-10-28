@@ -117,10 +117,10 @@ OnStart ==
     /\ inEvent.type = "start"
     /\ state' = "working"
         (* the block at trusted height is obtained by the user *)
+        \* TODO: the English spec does not make this explicit
     /\ storedHeaders' = { << blockchain[TRUSTED_HEIGHT],
                              DOMAIN blockchain[TRUSTED_HEIGHT].VP >> }
-        (* The only request on the stack ("right", h1, h2).
-           It is labelled as `right` to disable short-circuiting *)
+        (* The only request on the stack ("left", h1, h2) *)
     /\ LET initStack == << [isLeft |-> TRUE,
                            startHeight |-> TRUSTED_HEIGHT,
                            endHeight |-> inEvent.heightToVerify] >>
@@ -232,16 +232,22 @@ NeverStart == state /= "working"
 NeverFinish == state /= "finished"
 
 
-\* Correctness states that all the obtained headers are exactly like in the blockchain
-Correctness ==
+\* Correctness states that all the obtained headers are exactly like in the blockchain.
+\* This formula is equivalent to Accuracy in the English spec, that is, A => B iff ~A => ~B.
+CorrectnessInv ==
     outEvent.type = "finished" /\ outEvent.verdict = TRUE
         => (\A hdr \in storedHeaders: hdr[1] = blockchain[hdr[1].height])
 
-Precision ==
+PrecisionInv ==
     outEvent.type = "finished" /\ outEvent.verdict = FALSE
         => (\E hdr \in storedHeaders: hdr[1] /= blockchain[hdr[1].height])
+        
+\* TODO: add Termination that says that the light client always reaches the finished state
+\* under some conditions (when communicating with a correct full node).
 
-\* TODO: specify Completeness and Accuracy from the English spec
+\* TODO: specify Completeness, which is a combination of Termination and Precision.
+\* TODO: Completeness in the English spec assumes that the lite client communicates
+\* with a correct full node.  
 
 (************************** MODEL CHECKING ************************************)
 (*
@@ -263,5 +269,5 @@ Precision ==
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Oct 23 08:56:35 CEST 2019 by igor
+\* Last modified Mon Oct 28 14:01:58 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
