@@ -18,7 +18,7 @@ CONSTANTS
   TO_VERIFY_HEIGHT
     (* an index of the block header that the light client tries to verify *)
 
-VARIABLES
+VARIABLES       (* see TypeOK below for the variable types *)
   state,        (* the current state of the light client *)
   inEvent,      (* an input event to the light client, e.g., a header from a full node *)
   outEvent,     (* an output event from the light client, e.g., finished with a verdict *)
@@ -60,10 +60,10 @@ NoEvent == [type |-> "None"]
 
 InEvents ==
         (* start the client given the height to verify (fixed in our modelling) *)
-    [type: "start", heightToVerify: BC!Heights]
+    [type: {"start"}, heightToVerify: BC!Heights]
        \union
         (* receive a signed header that was requested before *)
-    [type: "responseHeader", hdr: BC!SignedHeaders]
+    [type: {"responseHeader"}, hdr: BC!SignedHeaders]
         \union
     {NoEvent}
     (* most likely, the implementation will have a timeout event, we do not need it here *)
@@ -83,6 +83,7 @@ EnvNext ==
        /\ outEvent.type = "requestHeader"
        /\ \E hdr \in BC!SoundSignedHeaders(outEvent.height):
             inEvent' = [type |-> "responseHeader", hdr |-> hdr]
+            \* if you like to see a counterexample, replace SoundSignedHeaders with SignedHeaders
 
 (************************** Lite client ************************************)
 
@@ -92,10 +93,10 @@ States == { "init", "working", "finished" }
 (* the events that can be issued by the lite client *)    
 OutEvents ==
         (* request the header for a given height from the peer full node *)
-    [type: "requestHeader", height: BC!Heights]
+    [type: {"requestHeader"}, height: BC!Heights]
         \union
         (* finish the check with a verdict *)
-    [type: "finish", verdict: BOOLEAN]  
+    [type: {"finished"}, verdict: BOOLEAN]  
         \union
     {NoEvent}      
 
@@ -128,33 +129,47 @@ OnStart ==
         /\ requestStack' = initStack
         /\ outEvent' = RequestHeaderForTopRequest(initStack)
 
-(* Check whether we can trust the signedHdr based on trustedHdr
-   following the trusting period method.
-   This operator is similar to CheckSupport in the English spec.
+(**
+ Check whether commits in a signed header are correct with respect to the given
+ validator set (DOMAIN votingPower) and votingPower.
+ *)
+Verify(votingPower, signedHdr) ==
+    \* the implementation should check the hashes and other properties of the header
+    LET TP == BC!PowerOfSet(votingPower, DOMAIN votingPower)
+        SP == BC!PowerOfSet(votingPower,
+                            signedHdr[2] \intersect DOMAIN votingPower)
+    IN
+        \* the commits are signed by the validators
+    /\ signedHdr[2] \subseteq DOMAIN signedHdr[1].VP
+        \* the 2/3s rule works
+    /\ 3 * SP > 2 * TP
+
+(* 
+ Check whether we can trust the signedHdr based on trustedHdr
+ following the trusting period method.
+ This operator is similar to CheckSupport in the English spec.
    
-   The parameters have the following meanings:
+ The parameters have the following meanings:
    - heightToTrust is the height of the trusted header
    - heightToVerify is the height of the header to be verified
    - trustedHdr is the trusted header (not a signed header)
    - signedHdr is the signed header to verify (including commits)
-   *)
+ *)
 CheckSupport(heightToTrust, heightToVerify, trustedHdr, signedHdr) ==
     IF minTrustedHeight > heightToTrust \* outside of the trusting period
-        \/ ~(signedHdr[2] \subseteq (DOMAIN signedHdr[1].VP)) \* signed by other nodes
     THEN FALSE
     ELSE
       LET TP == BC!PowerOfSet(trustedHdr.NextVP, DOMAIN trustedHdr.NextVP)
           SP == BC!PowerOfSet(trustedHdr.NextVP,
             signedHdr[2] \intersect DOMAIN trustedHdr.NextVP)
       IN
-      IF heightToVerify = heightToTrust + 1
-          \* the special case of adjacent heights: check 2/3s
-      THEN (3 * SP > 2 * TP)
-      ELSE \* the general case: check 1/3 between the headers and make sure there are 2/3 votes  
+      IF heightToVerify = heightToTrust + 1 \* adjacent headers
+      THEN signedHdr[1].VP = trustedHdr.NextVP
+      ELSE \* the general case: check 1/3 between the headers  
         LET TPV == BC!PowerOfSet(signedHdr[1].VP, DOMAIN signedHdr[1].VP)
             SPV == BC!PowerOfSet(signedHdr[1].VP, signedHdr[2])
         IN
-        (3 * SP > TP) /\ (3 * SPV > 2 * TPV)
+        3 * SP > TP
 
 (* Make one step of bisection, roughly one stack frame of Bisection in the English spec *)
 OneStepOfBisection(storedHdrs) ==
@@ -164,54 +179,57 @@ OneStepOfBisection(storedHdrs) ==
         lhdr == CHOOSE hdr \in storedHdrs: hdr[1].height = lh
         rhdr == CHOOSE hdr \in storedHdrs: hdr[1].height = rh
     IN
-    \* pass only the header lhdr[1] and signed header rhdr
-    IF CheckSupport(lh, rh, lhdr[1], rhdr)
+    IF Verify(lhdr[1].NextVP, rhdr) = FALSE
+    THEN <<FALSE, <<(* empty stack *)>> >> \* TERMINATE immediately
+    ELSE \* pass only the header lhdr[1] and signed header rhdr
+      IF CheckSupport(lh, rh, lhdr[1], rhdr)
         (* The header can be trusted, pop the request and return true *)
-    THEN <<TRUE, Tail(requestStack)>>
-    ELSE IF lh + 1 = rh \* sequential verification
-        THEN (*
-             Sequential verification tells us that the header cannot be trusted:
-             If the search request was scheduled as a left branch, then
-             (1) pop the top request (the left branch), and
-             (2) pop the second top request, which is the request for the right branch.
-             Otherwise, pop only the top request.
-             This is the optimization that is introduced in the English spec.
-             One can replace it e.g. with a parallel search.
-             *)
-            LET howManyToPop == IF topReq.isLeft THEN 2 ELSE 1 IN  
-            <<FALSE, SubSeq(requestStack, 1 + howManyToPop, Len(requestStack))>>
+      THEN <<TRUE, Tail(requestStack)>>
+      ELSE IF lh + 1 = rh \* sequential verification
+        THEN (* Sequential verification tells us that the header cannot be trusted. *)
+            <<FALSE, << (* empty stack *)>> >> \* TERMINATE immediately
         ELSE (*
              Dichotomy: schedule search requests for the left and right branches
              (and pop the top element off the stack).
              In contrast to the English spec, these requests are not processed immediately,
-             but one-by-one in a depth-first order (mind the optimization above).
+             but one-by-one in a depth-first order.
              *)
             LET rightReq == [isLeft |-> FALSE, startHeight |-> (lh + rh) \div 2, endHeight |-> rh]
                 leftReq ==  [isLeft |-> TRUE, startHeight |-> lh, endHeight |-> (lh + rh) \div 2]
             IN
             <<TRUE, <<leftReq, rightReq>> \o Tail(requestStack)>>
 
+(*
+ This is where the main loop of bisection is happening.
+ The action is activated by a response from a full node.
+ *)
 OnResponseHeader ==
   /\ state = "working"
   /\ inEvent.type = "responseHeader"
-  /\ storedHeaders' = storedHeaders \union { inEvent.hdr }
-  /\ LET res == OneStepOfBisection(storedHeaders')
+  /\ storedHeaders' = storedHeaders \union { inEvent.hdr }  \* save the header
+  /\ LET res == OneStepOfBisection(storedHeaders')          \* do one step
          verdict == res[1]
          newStack == res[2]
      IN
       /\ requestStack' = newStack
-      /\ IF newStack = << >>
+      /\ IF newStack = << >>            \* end of the bisection
          THEN /\ outEvent' = [type |-> "finished", verdict |-> verdict]
-              /\ state' = "finished"
+              /\ state' = "finished"    \* finish with the given verdict
          ELSE /\ outEvent' = RequestHeaderForTopRequest(newStack)
-              /\ state' = "working"  
+              /\ state' = "working"     \* continue
 
+(*
+ Initial states of the light client. No requests on the stack, no headers.
+ *)
 LCInit ==
     /\ state = "init"
     /\ outEvent = NoEvent
     /\ requestStack = <<>>
     /\ storedHeaders = {}
 
+(*
+ Actions of the light client: start or do bisection when receiving response.
+ *)
 LCNext ==
   OnStart \/ OnResponseHeader
             
@@ -219,11 +237,25 @@ LCNext ==
 (********************* Lite client + Environment + Blockchain *******************)
 Init == BC!Init /\ EnvInit /\ LCInit
 
+(*
+  A system step is made by one of the three components:
+    (1) light client, (2) environment (user + full node), (3) blockchain.
+ *)
 Next ==
   \/ LCNext  /\ UNCHANGED bcvars /\ UNCHANGED envvars
   \/ EnvNext /\ UNCHANGED bcvars /\ UNCHANGED lcvars
   \/ BC!Next /\ UNCHANGED lcvars /\ UNCHANGED envvars
 
+(************************* Types ******************************************)
+
+TypeOK ==
+    /\ state \in States
+    /\ inEvent \in InEvents
+    /\ outEvent \in OutEvents
+    /\ requestStack \in Seq([isLeft: BOOLEAN, startHeight: BC!Heights, endHeight: BC!Heights])
+    /\ storedHeaders \subseteq BC!SignedHeaders
+
+(************************* Properties ******************************************)
 
 (* The properties to check *)
 \* check this property to get an example of a terminating light client
@@ -269,5 +301,5 @@ PrecisionInv ==
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Oct 28 14:01:58 CET 2019 by igor
+\* Last modified Fri Nov 01 11:22:40 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
