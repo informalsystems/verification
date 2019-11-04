@@ -1,31 +1,25 @@
 ------------------------ MODULE TendermintFork --------------------------
 (*
- A TLA+ specification of Tendermint consensus by Ethan Buchman, Jae Kwon, and Zarko Milosevic.
- 
- For the moment, we assume the following:
- 
-   1. Every process has the voting power of 1.
-   2. Timeouts are non-deterministic (works for safety).
-   3. The proposer function is non-deterministic (works for safety).
- 
- Encoded in TLA+ by Igor Konnov. It took me 4 hours to translate the pseudo-code to TLA+.
+ This is a fork of the tendermint-safety/Tendermint that captures various
+ fork scenarious under the assumption that there are more faults than
+ the algorithm should be able to handle.
  *)
  
 EXTENDS Integers, FiniteSets
 
 CONSTANTS
-    PropFun,     \* the proposer function
-    Injected     \* a set of the messages injected by the faulty processes
+    N,              \* the total number of processes 
+    T,              \* the upper bound on the number of Byzantine processes
+    F,              \* the number of Byzantine processes
+    Heights,        \* the set of consensus instances
+    Rounds,         \* the set of possible rounds
+    ValidValues,    \* the set of values proposed by a correct process or a faulty one
+    InvalidValues,  \* the set of values proposed by a faulty process
+    PropFun,        \* the proposer function
+    FaultyMessages  \* the set of faulty messages that can be sent by the faulty processes
 
-N == 5 \* the total number of processes: correct and faulty
-T == 1 \* an upper bound on the number of Byzantine processes
-F == 1 \* the number of Byzantine processes
 Procs == 1..N-F
 Faulty == N-F+1..N
-Heights == 0..1 \* the set of consensus instances
-Rounds == 0..2  \* the set of possible rounds, give a bit more freedom to the solver
-ValidValues == {0, 1}     \* e.g., picked by a correct process, or a faulty one
-InvalidValues == {2}    \* e.g., sent by a Byzantine process
 Values == ValidValues \cup InvalidValues \* all values
 nil == -1
 
@@ -33,7 +27,7 @@ nil == -1
 THRESHOLD1 == T + 1
 THRESHOLD2 == 2 * T + 1 
 
-(* APALACHE-BEGIN annotations *)
+(* Type annotations needed  by APALACHE *)
 a <: b == a
 
 MT == [type |-> STRING, src |-> Int, h |-> Int, round |-> Int,
@@ -44,20 +38,6 @@ ValueT == Int
 RoundT == Int
 TimeoutT == <<Int, Int, Int>> \* process, height, round 
 (* APALACHE-END *)
-
-FaultyMessages == \* the messages that can be sent by the faulty processes
-    ([type: {"PROPOSAL"}, src: Faulty, h: Heights,
-              round: Rounds, proposal: Values, validRound: Rounds \cup {-1}] <: {MT})
-       \cup
-    ([type: {"PREVOTE"}, src: Faulty, h: Heights, round: Rounds, hash: Values] <: {MT})
-       \cup
-    ([type: {"PRECOMMIT"}, src: Faulty, h: Heights, round: Rounds, hash: Values] <: {MT})
-
-NInjected == 1 \* the number of injected faulty messages
-ConstInit ==
-    /\ PropFun \in [Heights \X Rounds -> Procs]
-    /\ Injected \in [1..NInjected -> FaultyMessages]
-
 
 \* these variables are exactly as in the pseudo-code
 VARIABLES h, round, step, decision, lockedValue, lockedRound, validValue, validRound 
@@ -85,8 +65,19 @@ Id(v) == v
 IsValid(v) == v \in ValidValues
 
 MixinFaults(ht, rd, type, msgs) ==
-    \* add the messages from the faulty processes, filtered by height, round, and type
-    msgs \cup {m \in {Injected[x] : x \in 1..NInjected} : m.h = ht /\ m.round = rd /\ m.type = type}
+    \* add the messages from the faulty processes, filtered by height, round
+    msgs \cup {m \in FaultyMessages : m.h = ht /\ m.round = rd /\ m.type = type}
+    
+\* compute the set of initial messages for a height, round, and value    
+InitProposals(ht, rd, v) ==
+    IF ht = 0 /\ rd = 0
+    THEN 
+        LET proposals ==
+           {[type |-> "PROPOSAL", src |-> Proposer(0, 0),
+             h |-> 0, round |-> 0, proposal |-> v, validRound |-> -1] <: MT} IN
+        MixinFaults(ht, rd, "PROPOSAL", proposals)
+    ELSE MixinFaults(ht, rd, "PROPOSAL", {} <: {MT})
+    
 
 \* here we start with StartRound(0)
 Init ==
@@ -99,12 +90,7 @@ Init ==
     /\ validValue = [p \in Procs |-> nil]
     /\ validRound = [p \in Procs |-> -1]
     /\ \E v \in ValidValues:
-        msgsPropose = [<<ht, rd>> \in Heights \X Rounds |->
-             MixinFaults(ht, rd, "PROPOSAL",
-                IF ht = 0 /\ rd = 0
-                THEN {[type |-> "PROPOSAL", src |-> Proposer(0, 0), h |-> 0, round |-> 0,
-                       proposal |-> v, validRound |-> -1] <: MT}
-                ELSE {} <: {MT})] \* no initial messages in other rounds
+        msgsPropose = [<<ht, rd>> \in Heights \X Rounds |-> InitProposals(ht, rd, v)]
     /\ msgsPrevote = [<<ht, rd>> \in Heights \X Rounds |-> MixinFaults(ht, rd, "PREVOTE", {} <: {MT})]
     /\ msgsPrecommit = [<<ht, rd>> \in Heights \X Rounds |-> MixinFaults(ht, rd, "PRECOMMIT", {} <: {MT})]
     /\ oldEvents = {} <: {ET}
@@ -370,5 +356,5 @@ NoTwoLockedRounds ==
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Sep 16 15:00:22 CEST 2019 by igor
+\* Last modified Mon Nov 04 12:07:03 CET 2019 by igor
 \* Created Fri Mar 15 10:30:17 CET 2019 by igor
