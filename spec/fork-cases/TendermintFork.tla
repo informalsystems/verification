@@ -1,4 +1,4 @@
------------------------------ MODULE Tendermint -----------------------------
+------------------------ MODULE TendermintFork --------------------------
 (*
  A TLA+ specification of Tendermint consensus by Ethan Buchman, Jae Kwon, and Zarko Milosevic.
  
