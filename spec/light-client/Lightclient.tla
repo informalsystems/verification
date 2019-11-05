@@ -187,7 +187,7 @@ OneStepOfBisection(storedHdrs) ==
     IF Verify(lhdr[1].NextVP, rhdr) = FALSE
     THEN <<FALSE, <<(* empty stack *)>> >> \* TERMINATE immediately
     ELSE \* pass only the header lhdr[1] and signed header rhdr
-      IF CheckSupport(lh, rh, lhdr[1], rhdr)
+      IF (* BUGFIX?: lh <= rh \/*) CheckSupport(lh, rh, lhdr[1], rhdr)
         (* The header can be trusted, pop the request and return true *)
       THEN <<TRUE, Tail(requestStack)>>
       ELSE IF lh + 1 = rh \* sequential verification
@@ -278,9 +278,28 @@ CorrectnessInv ==
 PrecisionInv ==
     outEvent.type = "finished" /\ outEvent.verdict = FALSE
         => (\E hdr \in storedHeaders: hdr[1] /= blockchain[hdr[1].height])
-        
-\* TODO: add Termination that says that the light client always reaches the finished state
-\* under some conditions (when communicating with a correct full node).
+
+\* The lite client must always terminate under the given pre-conditions.
+\* E.g., assuming that the full node always replies.
+TerminationPre ==
+       \* the user and the full node take steps, if they can
+    /\ WF_envvars(EnvNext)
+       \* and the lite client takes steps, if it can
+    /\ WF_lcvars(LCNext)
+       \* eventually, the blockchain is sufficiently high, and
+       \* the blockchain is never dead, see NeverStuck in Blockchain.tla
+    /\ <>[](height >= minTrustedHeight /\ height >= TO_VERIFY_HEIGHT)
+
+\* Given the preconditions, the lite client eventually terminates.        
+Termination ==
+  TerminationPre => <>(outEvent.type = "finished")        
+
+\* This property states that whenever the light client finishes with a positive outcome,
+\* the trusted header is still within the trusting period.
+\* The current spec most likely violates this property.
+PositiveBeforeTrustedHeaderExpires ==
+    (outEvent.type = "finished" /\ outEvent.verdict = TRUE)
+        => (minTrustedHeight <= TRUSTED_HEIGHT)
 
 \* TODO: specify Completeness, which is a combination of Termination and Precision.
 \* TODO: Completeness in the English spec assumes that the lite client communicates
@@ -303,8 +322,21 @@ PrecisionInv ==
    * Correctness: ???
    * Precision: ???
  *)
+ 
+(*
+  # Experiment 2.
+  Run TLC with the following parameters:
+  
+  ULTIMATE_HEIGHT <- 2,
+  MAX_POWER <- 1,
+  TO_VERIFY_HEIGHT <- 2,
+  TRUSTED_HEIGHT <- 1,
+  AllNodes <- { A_p1, A_p2, A_p3, A_p4 } \* choose symmetry reduction for model values
+  
+  * Check Termination (liveness property).
+ *)
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Nov 01 12:48:17 CET 2019 by igor
+\* Last modified Tue Nov 05 18:46:06 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
