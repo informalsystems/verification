@@ -127,12 +127,20 @@ OnStart ==
     /\ storedHeaders' = { << blockchain[TRUSTED_HEIGHT],
                              DOMAIN blockchain[TRUSTED_HEIGHT].VP >> }
         (* The only request on the stack ("left", h1, h2) *)
-    /\ LET initStack == << [isLeft |-> TRUE,
-                           startHeight |-> TRUSTED_HEIGHT,
-                           endHeight |-> inEvent.heightToVerify] >>
-       IN           
-        /\ requestStack' = initStack
-        /\ outEvent' = RequestHeaderForTopRequest(initStack)
+    /\ IF TRUSTED_HEIGHT < TO_VERIFY_HEIGHT
+       THEN
+         LET initStack == << [isLeft |-> TRUE,
+                              startHeight |-> TRUSTED_HEIGHT,
+                              endHeight |-> inEvent.heightToVerify] >>
+         IN
+         /\ requestStack' = initStack
+         /\ outEvent' = RequestHeaderForTopRequest(initStack)
+       ELSE
+         \* TODO: update the English spec to address h1 = h2
+         \*       (otherwise, the light client would not terminate)
+         \* TODO: implement the downward verification?
+         /\ outEvent' = [type |-> "finished", verdict |-> TRUE]
+         /\ UNCHANGED requestStack
 
 (**
  Check whether commits in a signed header are correct with respect to the given
@@ -164,13 +172,13 @@ CheckSupport(heightToTrust, heightToVerify, trustedHdr, signedHdr) ==
     IF minTrustedHeight > heightToTrust \* outside of the trusting period
     THEN FALSE
     ELSE
-      LET TP == BC!PowerOfSet(trustedHdr.NextVP, DOMAIN trustedHdr.NextVP)
-          SP == BC!PowerOfSet(trustedHdr.NextVP,
-            signedHdr[2] \intersect DOMAIN trustedHdr.NextVP)
-      IN
       IF heightToVerify = heightToTrust + 1 \* adjacent headers
       THEN signedHdr[1].VP = trustedHdr.NextVP
       ELSE \* the general case: check 1/3 between the headers  
+        LET TP == BC!PowerOfSet(trustedHdr.NextVP, DOMAIN trustedHdr.NextVP)
+            SP == BC!PowerOfSet(trustedHdr.NextVP,
+              signedHdr[2] \intersect DOMAIN trustedHdr.NextVP)
+        IN
         3 * SP > TP
 
 (* Make one step of bisection, roughly one stack frame of Bisection in the English spec *)
@@ -184,7 +192,7 @@ OneStepOfBisection(storedHdrs) ==
     IF Verify(lhdr[1].NextVP, rhdr) = FALSE
     THEN <<FALSE, <<(* empty stack *)>> >> \* TERMINATE immediately
     ELSE \* pass only the header lhdr[1] and signed header rhdr
-      IF (* BUGFIX?: lh <= rh \/*) CheckSupport(lh, rh, lhdr[1], rhdr)
+      IF CheckSupport(lh, rh, lhdr[1], rhdr)
         (* The header can be trusted, pop the request and return true *)
       THEN <<TRUE, Tail(requestStack)>>
       ELSE IF lh + 1 = rh \* sequential verification
@@ -237,16 +245,17 @@ LCNext ==
             
             
 (********************* Lite client + Environment + Blockchain *******************)
-Init == BC!Init /\ EnvInit /\ LCInit
+Init ==
+    BC!Init /\ EnvInit /\ LCInit
 
 (*
   A system step is made by one of the three components:
     (1) light client, (2) environment (user + full node), (3) blockchain.
  *)
 Next ==
-  \/ LCNext  /\ UNCHANGED bcvars /\ UNCHANGED envvars
-  \/ EnvNext /\ UNCHANGED bcvars /\ UNCHANGED lcvars
-  \/ BC!Next /\ UNCHANGED lcvars /\ UNCHANGED envvars
+    \/ LCNext  /\ UNCHANGED bcvars /\ UNCHANGED envvars
+    \/ EnvNext /\ UNCHANGED bcvars /\ UNCHANGED lcvars
+    \/ BC!Next /\ UNCHANGED lcvars /\ UNCHANGED envvars
 
 (************************* Types ******************************************)
 
@@ -263,8 +272,14 @@ TypeOK ==
 \* check this property to get an example of a terminating light client
 NeverStart == state /= "working"
 
-NeverFinish == state /= "finished"
+NeverFinishNegative ==
+  ~(outEvent.type = "finished" /\ outEvent.verdict = FALSE)
 
+NeverFinishPositive ==
+  ~(outEvent.type = "finished" /\ outEvent.verdict = TRUE)
+
+NeverFinishPositiveWithFaults ==
+  ~(outEvent.type = "finished" /\ outEvent.verdict = TRUE /\ tooManyFaults)
 
 \* Correctness states that all the obtained headers are exactly like in the blockchain.
 \* This formula is equivalent to Accuracy in the English spec, that is, A => B iff ~A => ~B.
@@ -275,6 +290,13 @@ CorrectnessInv ==
 PrecisionInv ==
     outEvent.type = "finished" /\ outEvent.verdict = FALSE
         => (\E hdr \in storedHeaders: hdr[1] /= blockchain[hdr[1].height])
+
+\* There are no two headers of the same height
+NoDupsInv ==
+    \A hdr1, hdr2 \in storedHeaders:
+      (hdr1.height = hdr2.height) => (hdr1 = hdr2)
+
+\* TODO: check that the sequence of the headers in storedHeaders satisfies checkSupport pairwise
 
 \* The lite client must always terminate under the given pre-conditions.
 \* E.g., assuming that the full node always replies.
@@ -335,5 +357,5 @@ PositiveBeforeTrustedHeaderExpires ==
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Nov 06 08:18:07 CET 2019 by igor
+\* Last modified Wed Nov 06 21:05:32 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor

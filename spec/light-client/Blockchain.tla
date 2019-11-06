@@ -172,6 +172,7 @@ AdvanceTime ==
 OneMoreFault ==
   /\ \E n \in AllNodes \ Faulty:
       /\ Faulty' = Faulty \cup {n}
+      /\ Faulty' /= AllNodes \* at least process remains non-faulty
       /\ tooManyFaults' = ~FaultAssumption(Faulty', minTrustedHeight, blockchain)
   /\ UNCHANGED <<height, minTrustedHeight, blockchain>>
 
@@ -218,5 +219,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Oct 22 23:12:01 CEST 2019 by igor
+\* Last modified Wed Nov 06 19:40:35 CET 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor
