@@ -1,4 +1,4 @@
----- MODULE MC ----
+---- MODULE MC4 ----
 EXTENDS Lightclient, TLC
 
 \* MV CONSTANT declarations@modelParameterConstants
