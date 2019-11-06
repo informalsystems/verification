@@ -171,9 +171,6 @@ CheckSupport(heightToTrust, heightToVerify, trustedHdr, signedHdr) ==
       IF heightToVerify = heightToTrust + 1 \* adjacent headers
       THEN signedHdr[1].VP = trustedHdr.NextVP
       ELSE \* the general case: check 1/3 between the headers  
-        LET TPV == BC!PowerOfSet(signedHdr[1].VP, DOMAIN signedHdr[1].VP)
-            SPV == BC!PowerOfSet(signedHdr[1].VP, signedHdr[2])
-        IN
         3 * SP > TP
 
 (* Make one step of bisection, roughly one stack frame of Bisection in the English spec *)
@@ -338,5 +335,5 @@ PositiveBeforeTrustedHeaderExpires ==
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Nov 05 18:46:06 CET 2019 by igor
+\* Last modified Wed Nov 06 08:18:07 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
