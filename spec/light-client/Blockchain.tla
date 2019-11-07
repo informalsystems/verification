@@ -41,6 +41,12 @@ BlockHeaders == [
     \* i.e., a multi-set. We store the next validators instead of the hash.
 ]
 
+(* A convenience operator that retrieves the validator set from a header *)
+VS(header) == DOMAIN header.VP
+
+(* A convenience operator that retrieves the next validator set from a header *)
+NextVS(header) == DOMAIN header.NextVP
+
 (* A signed header is just a header together with a set of commits *)
 \* TODO: Commits is the set of PRECOMMIT messages
 SignedHeaders == BlockHeaders \X Commits
@@ -129,7 +135,7 @@ FaultAssumption(pFaultyNodes, pMinTrustedHeight, pBlockchain) ==
    belongs to the correct processes. *)       
 AppendBlock ==
   LET last == blockchain[Len(blockchain)] IN
-  \E lastCommit \in (SUBSET (DOMAIN last.VP)) \ {{}},
+  \E lastCommit \in SUBSET (VS(last)) \ {{}},
      NextV \in SUBSET AllNodes \ {{}}:
      \E NextVP \in [NextV -> Powers]:
     LET new == [ height |-> height + 1, lastCommit |-> lastCommit,
@@ -141,19 +147,21 @@ AppendBlock ==
 
 (* Initialize the blockchain *)
 Init ==
-  /\ tooManyFaults = FALSE
-  /\ height = 1
-  /\ minTrustedHeight = 1
-  /\ Faulty = {}
+  /\ height = 1             \* there is just genesis block
+  /\ minTrustedHeight = 1   \* the genesis is initially trusted
+  /\ Faulty = {}            \* initially, there are no faults
+  /\ tooManyFaults = FALSE  \* there are no faults
   (* pick a genesis block of all nodes where next correct validators have >2/3 of power *)
-  /\ \E NextV \in SUBSET AllNodes:
-       \E NextVP \in [NextV -> Powers]:
-         LET VP == [n \in AllNodes |-> 1] 
+  /\ \E NextV \in SUBSET AllNodes:          \* pick a next validator set
+       \E NextVP \in [NextV -> Powers]:     \* and pick voting powers to every node
+         LET VP == [n \in AllNodes |-> 1]
+             \* assume that the validators of the genesis have voting power of 1
+             \* and construct the genesis block
              genesis == [ height |-> 1, lastCommit |-> {},
                           VP |-> VP, NextVP |-> NextVP]
          IN
-         /\ NextV /= {}
-         /\ blockchain = <<genesis>>
+         /\ NextV /= {}     \* assume that there is at least one next validator 
+         /\ blockchain = <<genesis>> \* initially, blockchain contains only the genesis
 
 (********************* BLOCKCHAIN ACTIONS ********************************)
           
@@ -194,6 +202,7 @@ Next ==
   \/ OneMoreFault
   \/ StutterInTheEnd
 
+(********************* PROPERTIES TO CHECK ********************************)
 
 (* Invariant: it should be always possible to add one more block unless:
   (1) either there are too many faults,
@@ -205,9 +214,10 @@ NeverStuck ==
   \/ minTrustedHeight > height \* the bonding period has expired
   \/ ENABLED AdvanceChain
 
-NextVPNonEmpty ==
+(* The next validator set is never empty *)
+NextVSNonEmpty ==
     \A h \in 1..Len(blockchain):
-      DOMAIN blockchain[h].NextVP /= {}
+      NextVS(blockchain[h]) /= {}
 
 (* False properties that can be checked with TLC, to see interesting behaviors *)
 
@@ -226,5 +236,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Oct 31 15:54:51 CET 2019 by igor
+\* Last modified Thu Nov 07 17:16:21 CET 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor
