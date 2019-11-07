@@ -105,17 +105,19 @@ OutEvents ==
         \union
     {NoEvent}      
 
-(* Produce a request event for the top element of the requestStack *)
+(* Produce a request event for the pivot of the top element of the requestStack *)
 RequestHeaderForTopRequest(stack) ==
     IF stack = <<>>
-    THEN NoEvent
+    THEN NoEvent    \* the stack is empty, no request
     ELSE  LET top == Head(stack)
-              heightToRequest ==
+              pivotHeight ==
                 IF top.isLeft
-                THEN top.endHeight      \* the pivot is on the right
-                ELSE top.startHeight    \* the pivot is on the left
+                \* bisection went to the left, so the pivot is the right bound
+                THEN top.endHeight
+                \* bisection went to the right, so the pivot is the left bound
+                ELSE top.startHeight
           IN
-          [type |-> "requestHeader", height |-> heightToRequest]
+          [type |-> "requestHeader", height |-> pivotHeight]
 
 (* When starting the light client *)
 OnStart ==
@@ -190,24 +192,25 @@ OneStepOfBisection(storedHdrs) ==
         rhdr == CHOOSE hdr \in storedHdrs: hdr[1].height = rh
     IN
     IF Verify(lhdr[1].NextVP, rhdr) = FALSE
-    THEN <<FALSE, <<(* empty stack *)>> >> \* TERMINATE immediately
+    THEN [verdict |-> FALSE, newStack |-> <<(* empty *)>> ] \* TERMINATE immediately
     ELSE \* pass only the header lhdr[1] and signed header rhdr
       IF CheckSupport(lh, rh, lhdr[1], rhdr)
         (* The header can be trusted, pop the request and return true *)
-      THEN <<TRUE, Tail(requestStack)>>
+      THEN [verdict |-> TRUE, newStack |-> Tail(requestStack)]
       ELSE IF lh + 1 = rh \* sequential verification
         THEN (* Sequential verification tells us that the header cannot be trusted. *)
-            <<FALSE, << (* empty stack *)>> >> \* TERMINATE immediately
+            [verdict |-> FALSE, newStack |-> <<(* empty *)>>] \* TERMINATE immediately
         ELSE (*
              Dichotomy: schedule search requests for the left and right branches
              (and pop the top element off the stack).
              In contrast to the English spec, these requests are not processed immediately,
              but one-by-one in a depth-first order.
              *)
-            LET rightReq == [isLeft |-> FALSE, startHeight |-> (lh + rh) \div 2, endHeight |-> rh]
-                leftReq ==  [isLeft |-> TRUE, startHeight |-> lh, endHeight |-> (lh + rh) \div 2]
+            LET pivot == (lh + rh) \div 2 \* the pivot point lies in the middle
+                rightReq == [isLeft |-> FALSE, startHeight |-> pivot, endHeight |-> rh]
+                leftReq ==  [isLeft |-> TRUE, startHeight |-> lh, endHeight |-> pivot]
             IN
-            <<TRUE, <<leftReq, rightReq>> \o Tail(requestStack)>>
+            [verdict |-> TRUE, newStack |-> <<leftReq, rightReq>> \o Tail(requestStack)]
 
 (*
  This is where the main loop of bisection is happening.
@@ -217,15 +220,12 @@ OnResponseHeader ==
   /\ state = "working"
   /\ inEvent.type = "responseHeader"
   /\ storedHeaders' = storedHeaders \union { inEvent.hdr }  \* save the header
-  /\ LET res == OneStepOfBisection(storedHeaders')          \* do one step
-         verdict == res[1]
-         newStack == res[2]
-     IN
-      /\ requestStack' = newStack
-      /\ IF newStack = << >>            \* end of the bisection
-         THEN /\ outEvent' = [type |-> "finished", verdict |-> verdict]
+  /\ LET res == OneStepOfBisection(storedHeaders') IN       \* do one step
+      /\ requestStack' = res.newStack
+      /\ IF res.newStack = << >>        \* end of the bisection
+         THEN /\ outEvent' = [type |-> "finished", verdict |-> res.verdict]
               /\ state' = "finished"    \* finish with the given verdict
-         ELSE /\ outEvent' = RequestHeaderForTopRequest(newStack)
+         ELSE /\ outEvent' = RequestHeaderForTopRequest(res.newStack)
               /\ state' = "working"     \* continue
 
 (*
@@ -294,7 +294,7 @@ PrecisionInv ==
 \* There are no two headers of the same height
 NoDupsInv ==
     \A hdr1, hdr2 \in storedHeaders:
-      (hdr1.height = hdr2.height) => (hdr1 = hdr2)
+      (hdr1[1].height = hdr2[1].height) => (hdr1 = hdr2)
 
 \* TODO: check that the sequence of the headers in storedHeaders satisfies checkSupport pairwise
 
@@ -357,5 +357,5 @@ PositiveBeforeTrustedHeaderExpires ==
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Nov 06 21:05:32 CET 2019 by igor
+\* Last modified Thu Nov 07 17:53:05 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
