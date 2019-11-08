@@ -41,6 +41,12 @@ BlockHeaders == [
     \* i.e., a multi-set. We store the next validators instead of the hash.
 ]
 
+(* A convenience operator that retrieves the validator set from a header *)
+VS(header) == DOMAIN header.VP
+
+(* A convenience operator that retrieves the next validator set from a header *)
+NextVS(header) == DOMAIN header.NextVP
+
 (* A signed header is just a header together with a set of commits *)
 \* TODO: Commits is the set of PRECOMMIT messages
 SignedHeaders == BlockHeaders \X Commits
@@ -56,8 +62,7 @@ VARIABLES
        In the implementation, this is the oldest block,
        where block.bftTime + trustingPeriod >= globalClock.now. *)
     blockchain,
-    (* A sequence of BlockHeaders,
-       which gives us the God's (or Daemon's) view of the blockchain. *)
+    (* A sequence of BlockHeaders, which gives us a bird view of the blockchain. *)
     Faulty
     (* A set of faulty nodes, which can act as validators. We assume that the set
        of faulty processes is non-decreasing. If a process has recovered, it should
@@ -72,39 +77,58 @@ Corr == AllNodes \ Faulty
 (****************************** BLOCKCHAIN ************************************)
 (* in the future, we may extract it in a module on its own *)
 
-(* Compute the total voting power of a subset of validators Nodes,
-   whose individual voting powers are given by a function vp *)  
+(*
+Compute the total voting power of a subset of pNodes \subseteq AllNodes,
+whose individual voting powers are given with a function
+pVotingPower \in AllNodes -> Powers.
+*)  
 RECURSIVE PowerOfSet(_, _)
-PowerOfSet(vp, Nodes) ==
-    IF Nodes = {}
+PowerOfSet(pVotingPower, pNodes) ==
+    IF pNodes = {}
     THEN 0
-    ELSE LET node == CHOOSE n \in Nodes: TRUE IN
-        (* ASSERT(node \in DOMAIN vp) *)
-        vp[node] + PowerOfSet(vp, Nodes \ {node})
+    ELSE LET node == CHOOSE n \in pNodes: TRUE IN
+        (* compute the voting power for the nodes in Nodes \ {node}
+           and sum it up with the node's power *)
+        pVotingPower[node] + PowerOfSet(pVotingPower, pNodes \ {node})
 
-TwoThirds(vp, set) ==
-    LET TP == PowerOfSet(vp, DOMAIN vp)
-        SP == PowerOfSet(vp, set)
+(*
+ Given a function pVotingPower \in D -> Powers for some D \subseteq AllNodes
+ and pNodes \subseteq D, test whether the set pNodes \subseteq AllNodes has
+ more than 2/3 of voting power among the nodes in D.
+ *)
+TwoThirds(pVotingPower, pNodes) ==
+    LET TP == PowerOfSet(pVotingPower, DOMAIN pVotingPower)
+        SP == PowerOfSet(pVotingPower, pNodes)
     IN
-    3 * SP > 2 * TP 
+    3 * SP > 2 * TP \* when thinking in real numbers, not integers: SP > 2.0 / 3.0 * TP 
 
-IsCorrectPowerForSet(Flt, vp, set) ==
-    LET FV == Flt \intersect set
-        CV == set \ FV
-        CP == PowerOfSet(vp, CV)
-        FP == PowerOfSet(vp, FV)
+(*
+ Given a function pVotingPower \in D -> Powers for some D \subseteq pNodes,
+ and a set of pFaultyNodes, test whether the voting power of the correct
+ nodes in pNodes is more than 2/3 of the voting power of the faulty nodes
+ among the nodes in pNodes.
+ *)
+IsCorrectPowerForSet(pFaultyNodes, pVotingPower, pNodes) ==
+    LET FN == pFaultyNodes \intersect pNodes  \* faulty nodes in pNodes
+        CN == pNodes \ pFaultyNodes           \* correct nodes in pNodes
+        CP == PowerOfSet(pVotingPower, CN)   \* power of the correct nodes
+        FP == PowerOfSet(pVotingPower, FN)   \* power of the faulty nodes
     IN
-    CP > 2 * FP \* 2/3 rule. Note: when FP = 0, this implies CP > 0.
+    \* CP + FP = TP is the total voting power, so we write CP > 2.0 / 3 * TP as follows:
+    CP > 2 * FP \* Note: when FP = 0, this implies CP > 0.
 
-(* Is the voting power correct,
-   that is, more than 2/3 of the voting power belongs to the correct processes? *)
-IsCorrectPower(Flt, vp) ==
-    IsCorrectPowerForSet(Flt, vp, DOMAIN vp)
+(*
+ Given a function votingPower \in D -> Power for some D \subseteq Nodes,
+ and a set of FaultyNodes, test whether the voting power of the correct nodes in D
+ is more than 2/3 of the voting power of the faulty nodes in D.
+ *)
+IsCorrectPower(pFaultyNodes, pVotingPower) ==
+    IsCorrectPowerForSet(pFaultyNodes, pVotingPower, DOMAIN pVotingPower)
     
 (* This is what we believe is the assumption about failures in Tendermint *)     
-FaultAssumption(Flt, mth, bc) ==
-    \A h \in mth..Len(bc):
-        IsCorrectPower(Flt, bc[h].NextVP)
+FaultAssumption(pFaultyNodes, pMinTrustedHeight, pBlockchain) ==
+    \A h \in pMinTrustedHeight..Len(pBlockchain):
+        IsCorrectPower(pFaultyNodes, pBlockchain[h].NextVP)
 
 
 (* A signed header whose commit coincides with the last commit of a block,
@@ -121,7 +145,7 @@ SoundSignedHeaders(ht) ==
    belongs to the correct processes. *)       
 AppendBlock ==
   LET last == blockchain[Len(blockchain)] IN
-  \E lastCommit \in (SUBSET (DOMAIN last.VP)) \ {{}},
+  \E lastCommit \in SUBSET (VS(last)) \ {{}},
      NextV \in SUBSET AllNodes \ {{}}:
      \E NextVP \in [NextV -> Powers]:
     LET new == [ height |-> height + 1, lastCommit |-> lastCommit,
@@ -133,19 +157,21 @@ AppendBlock ==
 
 (* Initialize the blockchain *)
 Init ==
-  /\ tooManyFaults = FALSE
-  /\ height = 1
-  /\ minTrustedHeight = 1
-  /\ Faulty = {}
+  /\ height = 1             \* there is just genesis block
+  /\ minTrustedHeight = 1   \* the genesis is initially trusted
+  /\ Faulty = {}            \* initially, there are no faults
+  /\ tooManyFaults = FALSE  \* there are no faults
   (* pick a genesis block of all nodes where next correct validators have >2/3 of power *)
-  /\ \E NextV \in SUBSET AllNodes:
-       \E NextVP \in [NextV -> Powers]:
-         LET VP == [n \in AllNodes |-> 1] 
+  /\ \E NextV \in SUBSET AllNodes:          \* pick a next validator set
+       \E NextVP \in [NextV -> Powers]:     \* and pick voting powers to every node
+         LET VP == [n \in AllNodes |-> 1]
+             \* assume that the validators of the genesis have voting power of 1
+             \* and construct the genesis block
              genesis == [ height |-> 1, lastCommit |-> {},
                           VP |-> VP, NextVP |-> NextVP]
          IN
-         /\ NextV /= {}
-         /\ blockchain = <<genesis>>
+         /\ NextV /= {}     \* assume that there is at least one next validator 
+         /\ blockchain = <<genesis>> \* initially, blockchain contains only the genesis
 
 (********************* BLOCKCHAIN ACTIONS ********************************)
           
@@ -187,6 +213,7 @@ Next ==
   \/ OneMoreFault
   \/ StutterInTheEnd
 
+(********************* PROPERTIES TO CHECK ********************************)
 
 (* Invariant: it should be always possible to add one more block unless:
   (1) either there are too many faults,
@@ -198,9 +225,10 @@ NeverStuck ==
   \/ minTrustedHeight > height \* the bonding period has expired
   \/ ENABLED AdvanceChain
 
-NextVPNonEmpty ==
+(* The next validator set is never empty *)
+NextVSNonEmpty ==
     \A h \in 1..Len(blockchain):
-      DOMAIN blockchain[h].NextVP /= {}
+      NextVS(blockchain[h]) /= {}
 
 (* False properties that can be checked with TLC, to see interesting behaviors *)
 
@@ -219,5 +247,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Nov 06 19:40:35 CET 2019 by igor
+\* Last modified Fri Nov 08 21:34:45 CET 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor
