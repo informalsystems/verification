@@ -49,7 +49,7 @@ NextVS(header) == DOMAIN header.NextVP
 
 (* A signed header is just a header together with a set of commits *)
 \* TODO: Commits is the set of PRECOMMIT messages
-SignedHeaders == BlockHeaders \X Commits
+SignedHeaders == [header: BlockHeaders, Commits: Commits]
 
 VARIABLES
     tooManyFaults,
@@ -134,9 +134,9 @@ FaultAssumption(pFaultyNodes, pMinTrustedHeight, pBlockchain) ==
 (* A signed header whose commit coincides with the last commit of a block,
    unless the commits are made by the faulty nodes *)
 SoundSignedHeaders(ht) ==
-    { <<h, c>> \in SignedHeaders:
-        \/ h = blockchain[ht]
-        \/ c \subseteq Faulty /\ h.height = ht
+    { sh \in SignedHeaders:
+        \/ sh.header = blockchain[ht]
+        \/ sh.Commits \subseteq Faulty /\ sh.header.height = ht
     }
 
 
@@ -247,5 +247,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Nov 08 21:34:45 CET 2019 by igor
+\* Last modified Fri Nov 08 22:13:28 CET 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor

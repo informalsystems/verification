@@ -23,10 +23,10 @@ VARIABLES       (* see TypeOK below for the variable types *)
   inEvent,      (* an input event to the light client, e.g., a header from a full node *)
   outEvent,     (* an output event from the light client, e.g., finished with a verdict *)
   requestStack,     (* the stack of requests to be issued by the light client to a full node *)
-  storedHeaders     (* the set of headers obtained from a full node*) 
+  storedSignedHeaders     (* the set of headers obtained from a full node*) 
 
 (* the variables of the lite client *)  
-lcvars == <<state, outEvent, requestStack, storedHeaders>>  
+lcvars == <<state, outEvent, requestStack, storedSignedHeaders>>  
 
 (* the variables of the client's environment, that is, input events *)
 envvars == <<inEvent>>  
@@ -126,8 +126,9 @@ OnStart ==
     /\ state' = "working"
         (* the block at trusted height is obtained by the user *)
         \* TODO: the English spec does not make this explicit
-    /\ storedHeaders' = { << blockchain[TRUSTED_HEIGHT],
-                             BC!VS(blockchain[TRUSTED_HEIGHT]) >> }
+    /\ storedSignedHeaders' =
+        { [header |-> blockchain[TRUSTED_HEIGHT],
+           Commits |-> BC!VS(blockchain[TRUSTED_HEIGHT])] }
         (* The only request on the stack ("left", h1, h2) *)
     /\ IF TRUSTED_HEIGHT < TO_VERIFY_HEIGHT
        THEN
@@ -152,10 +153,10 @@ Verify(pVotingPower, pSignedHdr) ==
     \* the implementation should check the hashes and other properties of the header
     LET Validators == DOMAIN pVotingPower
         TP == BC!PowerOfSet(pVotingPower, Validators)
-        SP == BC!PowerOfSet(pVotingPower, pSignedHdr[2] \intersect Validators)
+        SP == BC!PowerOfSet(pVotingPower, pSignedHdr.Commits \intersect Validators)
     IN
         \* the commits are signed by the validators
-    /\ pSignedHdr[2] \subseteq BC!VS(pSignedHdr[1])
+    /\ pSignedHdr.Commits \subseteq BC!VS(pSignedHdr.header)
         \* the 2/3s rule works
     /\ 3 * SP > 2 * TP
 
@@ -175,26 +176,26 @@ CheckSupport(pHeightToTrust, pHeightToVerify, pTrustedHdr, pSignedHdr) ==
     THEN FALSE
     ELSE
       IF pHeightToVerify = pHeightToTrust + 1 \* adjacent headers
-      THEN pSignedHdr[1].VP = pTrustedHdr.NextVP
+      THEN pSignedHdr.header.VP = pTrustedHdr.NextVP
       ELSE \* the general case: check 1/3 between the headers  
         LET TP == BC!PowerOfSet(pTrustedHdr.NextVP, BC!NextVS(pTrustedHdr))
             SP == BC!PowerOfSet(pTrustedHdr.NextVP,
-              pSignedHdr[2] \intersect BC!NextVS(pTrustedHdr))
+              pSignedHdr.Commits \intersect BC!NextVS(pTrustedHdr))
         IN
         3 * SP > TP
 
 (* Make one step of bisection, roughly one stack frame of Bisection in the English spec *)
-OneStepOfBisection(pStoredHeaders) ==
+OneStepOfBisection(pStoredSignedHeaders) ==
     LET topReq == Head(requestStack)
         lh == topReq.startHeight
         rh == topReq.endHeight
-        lhdr == CHOOSE hdr \in pStoredHeaders: hdr[1].height = lh
-        rhdr == CHOOSE hdr \in pStoredHeaders: hdr[1].height = rh
+        lhdr == CHOOSE shdr \in pStoredSignedHeaders: shdr.header.height = lh
+        rhdr == CHOOSE shdr \in pStoredSignedHeaders: shdr.header.height = rh
     IN
-    IF Verify(lhdr[1].NextVP, rhdr) = FALSE
+    IF Verify(lhdr.header.NextVP, rhdr) = FALSE
     THEN [verdict |-> FALSE, newStack |-> <<(* empty *)>> ] \* TERMINATE immediately
-    ELSE \* pass only the header lhdr[1] and signed header rhdr
-      IF CheckSupport(lh, rh, lhdr[1], rhdr)
+    ELSE \* pass only the header lhdr.header and signed header rhdr
+      IF CheckSupport(lh, rh, lhdr.header, rhdr)
         (* The header can be trusted, pop the request and return true *)
       THEN [verdict |-> TRUE, newStack |-> Tail(requestStack)]
       ELSE IF lh + 1 = rh \* sequential verification
@@ -219,8 +220,8 @@ OneStepOfBisection(pStoredHeaders) ==
 OnResponseHeader ==
   /\ state = "working"
   /\ inEvent.type = "responseHeader"
-  /\ storedHeaders' = storedHeaders \union { inEvent.hdr }  \* save the header
-  /\ LET res == OneStepOfBisection(storedHeaders') IN       \* do one step
+  /\ storedSignedHeaders' = storedSignedHeaders \union { inEvent.hdr }  \* save the header
+  /\ LET res == OneStepOfBisection(storedSignedHeaders') IN       \* do one step
       /\ requestStack' = res.newStack
       /\ IF res.newStack = << >>        \* end of the bisection
          THEN /\ outEvent' = [type |-> "finished", verdict |-> res.verdict]
@@ -235,7 +236,7 @@ LCInit ==
     /\ state = "init"
     /\ outEvent = NoEvent
     /\ requestStack = <<>>
-    /\ storedHeaders = {}
+    /\ storedSignedHeaders = {}
 
 (*
  Actions of the light client: start or do bisection when receiving response.
@@ -264,7 +265,7 @@ TypeOK ==
     /\ inEvent \in InEvents
     /\ outEvent \in OutEvents
     /\ requestStack \in Seq([isLeft: BOOLEAN, startHeight: BC!Heights, endHeight: BC!Heights])
-    /\ storedHeaders \subseteq BC!SignedHeaders
+    /\ storedSignedHeaders \subseteq BC!SignedHeaders
 
 (************************* Properties ******************************************)
 
@@ -285,18 +286,18 @@ NeverFinishPositiveWithFaults ==
 \* This formula is equivalent to Accuracy in the English spec, that is, A => B iff ~A => ~B.
 CorrectnessInv ==
     outEvent.type = "finished" /\ outEvent.verdict = TRUE
-        => (\A hdr \in storedHeaders: hdr[1] = blockchain[hdr[1].height])
+        => (\A shdr \in storedSignedHeaders: shdr.header = blockchain[shdr.header.height])
 
 PrecisionInv ==
     outEvent.type = "finished" /\ outEvent.verdict = FALSE
-        => (\E hdr \in storedHeaders: hdr[1] /= blockchain[hdr[1].height])
+        => (\E shdr \in storedSignedHeaders: shdr.header /= blockchain[shdr.header.height])
 
 \* There are no two headers of the same height
 NoDupsInv ==
-    \A hdr1, hdr2 \in storedHeaders:
-      (hdr1[1].height = hdr2[1].height) => (hdr1 = hdr2)
+    \A shdr1, shdr2 \in storedSignedHeaders:
+      (shdr1.header.height = shdr2.header.height) => (shdr1 = shdr2)
 
-\* TODO: check that the sequence of the headers in storedHeaders satisfies checkSupport pairwise
+\* TODO: check that the sequence of the headers in storedSignedHeaders satisfies checkSupport pairwise
 
 \* The lite client must always terminate under the given pre-conditions.
 \* E.g., assuming that the full node always replies.
@@ -357,5 +358,5 @@ PositiveBeforeTrustedHeaderExpires ==
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Nov 08 22:07:10 CET 2019 by igor
+\* Last modified Fri Nov 08 22:22:44 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
