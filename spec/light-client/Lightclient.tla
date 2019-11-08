@@ -106,10 +106,10 @@ OutEvents ==
     {NoEvent}      
 
 (* Produce a request event for the pivot of the top element of the requestStack *)
-RequestHeaderForTopRequest(stack) ==
-    IF stack = <<>>
+RequestHeaderForTopRequest(pStack) ==
+    IF pStack = <<>>
     THEN NoEvent    \* the stack is empty, no request
-    ELSE  LET top == Head(stack)
+    ELSE  LET top == Head(pStack)
               pivotHeight ==
                 IF top.isLeft
                 \* bisection went to the left, so the pivot is the right bound
@@ -148,14 +148,14 @@ OnStart ==
  Check whether commits in a signed header are correct with respect to the given
  validator set (DOMAIN votingPower) and votingPower.
  *)
-Verify(votingPower, signedHdr) ==
+Verify(pVotingPower, pSignedHdr) ==
     \* the implementation should check the hashes and other properties of the header
-    LET Validators == DOMAIN votingPower
-        TP == BC!PowerOfSet(votingPower, Validators)
-        SP == BC!PowerOfSet(votingPower, signedHdr[2] \intersect Validators)
+    LET Validators == DOMAIN pVotingPower
+        TP == BC!PowerOfSet(pVotingPower, Validators)
+        SP == BC!PowerOfSet(pVotingPower, pSignedHdr[2] \intersect Validators)
     IN
         \* the commits are signed by the validators
-    /\ signedHdr[2] \subseteq BC!VS(signedHdr[1])
+    /\ pSignedHdr[2] \subseteq BC!VS(pSignedHdr[1])
         \* the 2/3s rule works
     /\ 3 * SP > 2 * TP
 
@@ -170,26 +170,26 @@ Verify(votingPower, signedHdr) ==
    - trustedHdr is the trusted header (not a signed header)
    - signedHdr is the signed header to verify (including commits)
  *)
-CheckSupport(heightToTrust, heightToVerify, trustedHdr, signedHdr) ==
-    IF minTrustedHeight > heightToTrust \* outside of the trusting period
+CheckSupport(pHeightToTrust, pHeightToVerify, pTrustedHdr, pSignedHdr) ==
+    IF minTrustedHeight > pHeightToTrust \* outside of the trusting period
     THEN FALSE
     ELSE
-      IF heightToVerify = heightToTrust + 1 \* adjacent headers
-      THEN signedHdr[1].VP = trustedHdr.NextVP
+      IF pHeightToVerify = pHeightToTrust + 1 \* adjacent headers
+      THEN pSignedHdr[1].VP = pTrustedHdr.NextVP
       ELSE \* the general case: check 1/3 between the headers  
-        LET TP == BC!PowerOfSet(trustedHdr.NextVP, BC!NextVS(trustedHdr))
-            SP == BC!PowerOfSet(trustedHdr.NextVP,
-              signedHdr[2] \intersect BC!NextVS(trustedHdr))
+        LET TP == BC!PowerOfSet(pTrustedHdr.NextVP, BC!NextVS(pTrustedHdr))
+            SP == BC!PowerOfSet(pTrustedHdr.NextVP,
+              pSignedHdr[2] \intersect BC!NextVS(pTrustedHdr))
         IN
         3 * SP > TP
 
 (* Make one step of bisection, roughly one stack frame of Bisection in the English spec *)
-OneStepOfBisection(storedHdrs) ==
+OneStepOfBisection(pStoredHeaders) ==
     LET topReq == Head(requestStack)
         lh == topReq.startHeight
         rh == topReq.endHeight
-        lhdr == CHOOSE hdr \in storedHdrs: hdr[1].height = lh
-        rhdr == CHOOSE hdr \in storedHdrs: hdr[1].height = rh
+        lhdr == CHOOSE hdr \in pStoredHeaders: hdr[1].height = lh
+        rhdr == CHOOSE hdr \in pStoredHeaders: hdr[1].height = rh
     IN
     IF Verify(lhdr[1].NextVP, rhdr) = FALSE
     THEN [verdict |-> FALSE, newStack |-> <<(* empty *)>> ] \* TERMINATE immediately
@@ -357,5 +357,5 @@ PositiveBeforeTrustedHeaderExpires ==
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Nov 08 21:50:01 CET 2019 by igor
+\* Last modified Fri Nov 08 22:07:10 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
