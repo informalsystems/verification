@@ -127,7 +127,7 @@ OnStart ==
         (* the block at trusted height is obtained by the user *)
         \* TODO: the English spec does not make this explicit
     /\ storedHeaders' = { << blockchain[TRUSTED_HEIGHT],
-                             DOMAIN blockchain[TRUSTED_HEIGHT].VP >> }
+                             BC!VS(blockchain[TRUSTED_HEIGHT]) >> }
         (* The only request on the stack ("left", h1, h2) *)
     /\ IF TRUSTED_HEIGHT < TO_VERIFY_HEIGHT
        THEN
@@ -150,12 +150,12 @@ OnStart ==
  *)
 Verify(votingPower, signedHdr) ==
     \* the implementation should check the hashes and other properties of the header
-    LET TP == BC!PowerOfSet(votingPower, DOMAIN votingPower)
-        SP == BC!PowerOfSet(votingPower,
-                            signedHdr[2] \intersect DOMAIN votingPower)
+    LET Validators == DOMAIN votingPower
+        TP == BC!PowerOfSet(votingPower, Validators)
+        SP == BC!PowerOfSet(votingPower, signedHdr[2] \intersect Validators)
     IN
         \* the commits are signed by the validators
-    /\ signedHdr[2] \subseteq DOMAIN signedHdr[1].VP
+    /\ signedHdr[2] \subseteq BC!VS(signedHdr[1])
         \* the 2/3s rule works
     /\ 3 * SP > 2 * TP
 
@@ -177,9 +177,9 @@ CheckSupport(heightToTrust, heightToVerify, trustedHdr, signedHdr) ==
       IF heightToVerify = heightToTrust + 1 \* adjacent headers
       THEN signedHdr[1].VP = trustedHdr.NextVP
       ELSE \* the general case: check 1/3 between the headers  
-        LET TP == BC!PowerOfSet(trustedHdr.NextVP, DOMAIN trustedHdr.NextVP)
+        LET TP == BC!PowerOfSet(trustedHdr.NextVP, BC!NextVS(trustedHdr))
             SP == BC!PowerOfSet(trustedHdr.NextVP,
-              signedHdr[2] \intersect DOMAIN trustedHdr.NextVP)
+              signedHdr[2] \intersect BC!NextVS(trustedHdr))
         IN
         3 * SP > TP
 
@@ -357,5 +357,5 @@ PositiveBeforeTrustedHeaderExpires ==
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Nov 07 17:53:05 CET 2019 by igor
+\* Last modified Fri Nov 08 21:50:01 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
