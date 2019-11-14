@@ -135,8 +135,8 @@ FaultAssumption(pFaultyNodes, pMinTrustedHeight, pBlockchain) ==
    unless the commits are made by the faulty nodes *)
 SoundSignedHeaders(ht) ==
     { sh \in SignedHeaders:
-        \/ sh.header = blockchain[ht]
-        \/ sh.Commits \subseteq Faulty /\ sh.header.height = ht
+        \/ sh.header = blockchain[ht] \* signed by correct and faulty (maybe)
+        \/ sh.Commits \subseteq Faulty /\ sh.header.height = ht \* signed only by faulty
     }
 
 
@@ -247,5 +247,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Nov 08 22:13:28 CET 2019 by igor
+\* Last modified Wed Nov 13 17:29:59 CET 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor

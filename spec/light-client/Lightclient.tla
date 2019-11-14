@@ -55,7 +55,7 @@ bcvars == <<tooManyFaults, height, minTrustedHeight, blockchain, Faulty>>
 BC == INSTANCE Blockchain WITH tooManyFaults <- tooManyFaults, height <- height,
   minTrustedHeight <- minTrustedHeight, blockchain <- blockchain, Faulty <- Faulty
 
-(************************** Environment ************************************)
+(**************** Environment: User + Full node *************************)
 NoEvent == [type |-> "None"]
 
 InEvents ==
@@ -375,15 +375,15 @@ Completeness ==
   MAX_POWER <- 1,
   TO_VERIFY_HEIGHT <- 3,
   TRUSTED_HEIGHT <- 1,
-  AllNodes <- { A_p1, A_p2, A_p3, A_p4 } \* choose symmetry reduction for model values
+  AllNodes <- { A_p1, A_p2 } \* choose symmetry reduction for model values
   
-   * Deadlocks: a deadlock occurs when minTrustedHeight > height.
-   * StoredHeadersAreSound: ??
-   * StoredHeadersAreSoundOrNonTrusted: ??
-   * PositiveBeforeTrustedHeaderExpires: ??
-   * CorrectnessInv: ???
-   * PrecisionInv: ???
-   * Termination: 
+   * StoredHeadersAreSound: violation after 9 sec.
+   * StoredHeadersAreSoundOrNonTrusted: correct after 50 sec.
+   * PositiveBeforeTrustedHeaderExpires: violation after 10 sec.
+   * PrecisionInv: violation after 3 sec.
+   * CorrectnessInv: violation after 7 sec: lastCommit may deviate
+   * Termination: satisfied after 17 min.
+   * NoDupsInv: satisfied after 1 min.
 
   # Experiment 2.
   Run TLC with the following parameters:
@@ -392,14 +392,17 @@ Completeness ==
   MAX_POWER <- 1,
   TO_VERIFY_HEIGHT <- 3,
   TRUSTED_HEIGHT <- 1,
-  AllNodes <- { A_p1, A_p2 } \* choose symmetry reduction for model values
+  AllNodes <- { A_p1, A_p2, A_p3, A_p4 } \* choose symmetry reduction for model values
   
-   * StoredHeadersAreSound: violation after 9 sec.
+   * Deadlocks: a deadlock occurs when minTrustedHeight > height.
+   * StoredHeadersAreSound: ??
    * StoredHeadersAreSoundOrNonTrusted: ??
-   * PositiveBeforeTrustedHeaderExpires: ??
+   * CorrectnessInv: ???
+   * PrecisionInv: ???
+   * Termination: 
  *)
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Nov 13 16:51:42 CET 2019 by igor
+\* Last modified Thu Nov 14 11:15:35 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
