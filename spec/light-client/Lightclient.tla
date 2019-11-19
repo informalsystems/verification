@@ -109,15 +109,13 @@ OutEvents ==
 RequestHeaderForTopRequest(pStack) ==
     IF pStack = <<>>
     THEN NoEvent    \* the stack is empty, no request
-    ELSE  LET top == Head(pStack)
-              pivotHeight ==
-                IF top.isLeft
-                \* bisection went to the left, so the pivot is the right bound
-                THEN top.endHeight
-                \* bisection went to the right, so the pivot is the left bound
-                ELSE top.startHeight
-          IN
-          [type |-> "requestHeader", height |-> pivotHeight]
+    ELSE
+      LET top == Head(pStack) IN
+      IF ~top.isLeft
+      THEN \* no request for the right branch, the header should have been received
+        NoEvent
+      ELSE \* request for the left branch, the pivot is the endHeight
+        [type |-> "requestHeader", height |-> top.endHeight]
 
 (* When starting the light client *)
 OnStart ==
@@ -221,8 +219,9 @@ OneStepOfBisection(pStoredSignedHeaders) ==
 (*
  This is where the main loop of bisection is happening.
  The action is activated by a response from a full node.
+ The response is sent for a left branch of the bisection.
  *)
-OnResponseHeader ==
+OnLeftResponseHeader ==
   /\ state = "working"
   /\ inEvent.type = "responseHeader"
   /\ inEvent' = NoEvent \* forget the input event
@@ -234,6 +233,26 @@ OnResponseHeader ==
               /\ state' = "finished"    \* finish with the given verdict
          ELSE /\ outEvent' = RequestHeaderForTopRequest(res.newStack)
               /\ state' = "working"     \* continue
+
+(*
+  This step of bisection is taken when the right branch should be explored.
+  It does not need a response from the full node,
+  as the pivot header should have been received for the left branch.
+ *)
+OnRightBranch ==
+  /\ state = "working"
+  /\ requestStack /= << >>
+  /\ LET top == Head(requestStack) IN
+    /\ ~top.isLeft          \* the header should have been received already
+    /\ inEvent' = NoEvent   \* no input event required
+    /\ UNCHANGED storedSignedHeaders \* no headers to store
+    /\ LET res == OneStepOfBisection(storedSignedHeaders) IN \* do one step
+         /\ requestStack' = res.newStack
+         /\ IF res.newStack = << >>        \* end of the bisection
+            THEN /\ outEvent' = [type |-> "finished", verdict |-> res.verdict]
+                 /\ state' = "finished"    \* finish with the given verdict
+            ELSE /\ outEvent' = RequestHeaderForTopRequest(res.newStack)
+                 /\ state' = "working"     \* continue
 
 (*
  Initial states of the light client. No requests on the stack, no headers.
@@ -248,7 +267,7 @@ LCInit ==
  Actions of the light client: start or do bisection when receiving response.
  *)
 LCNext ==
-  OnStart \/ OnResponseHeader
+  OnStart \/ OnLeftResponseHeader \/ OnRightBranch
             
             
 (********************* Lite client + Environment + Blockchain *******************)
@@ -260,9 +279,13 @@ Init ==
     (1) light client, (2) environment (user + full node), (3) blockchain.
  *)
 Next ==
-    \/ LCNext  /\ UNCHANGED bcvars \* LC resets inEvent *\
-    \/ EnvNext /\ UNCHANGED bcvars /\ UNCHANGED lcvars
-    \/ BC!Next /\ UNCHANGED lcvars /\ UNCHANGED envvars
+    IF outEvent.type = "finished"
+         \* the system has stopped, as the lite client has finished
+    THEN UNCHANGED <<lcvars, envvars, bcvars>>
+    ELSE \* the system is running
+        \/ LCNext  /\ UNCHANGED bcvars \* LC resets inEvent *\
+        \/ EnvNext /\ UNCHANGED bcvars /\ UNCHANGED lcvars
+        \/ BC!Next /\ UNCHANGED lcvars /\ UNCHANGED envvars
 
 (************************* Types ******************************************)
 
@@ -402,8 +425,8 @@ Completeness ==
   AllNodes <- { A_p1, A_p2 } \* choose symmetry reduction for model values
   
    * Termination: satisfied after 17 min.
-   * PrecisionInv: satisfied after 58 min. (38M states, 7G disk space)
-   * Correctness: satisfied after 1 hour 15 min.
+   * PrecisionInv: satisfied after 3 min 36 sec.
+   * Correctness: satisfied after 3 min 02 sec.
    * CorrectnessInv: violation after 7 sec: lastCommit may deviate
    * NoDupsInv: satisfied after 1 min.
    * StoredHeadersAreSound: violation after 9 sec.
@@ -429,5 +452,5 @@ Completeness ==
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Nov 19 13:10:14 CET 2019 by igor
+\* Last modified Tue Nov 19 21:35:43 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
