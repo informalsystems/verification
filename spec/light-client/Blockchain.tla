@@ -222,7 +222,7 @@ Next ==
 NeverStuck ==
   \/ tooManyFaults
   \/ height = ULTIMATE_HEIGHT
-  \/ minTrustedHeight > height \* the bonding period has expired
+  \/ minTrustedHeight > height \* the trusting period has expired
   \/ ENABLED AdvanceChain
 
 (* The next validator set is never empty *)
@@ -247,5 +247,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Nov 13 17:29:59 CET 2019 by igor
+\* Last modified Tue Nov 19 11:15:32 CET 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor

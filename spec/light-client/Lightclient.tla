@@ -1,9 +1,9 @@
 ---------------------------- MODULE Lightclient ----------------------------
 (*
- * A state-machine specification of the light client, following the English spec:
+ * A state-machine specification of the lite client, following the English spec:
  * https://github.com/tendermint/tendermint/blob/master/docs/spec/consensus/light-client.md
  *
- * Whereas the English specification presents the light client as a piece of sequential code,
+ * Whereas the English specification presents the lite client as a piece of sequential code,
  * which contains non-tail recursion, we specify a state machine that explicitly has
  * a stack of requests in its state. This specification can be easily extended to support
  * multiple requests at the same time, e.g., to reduce latency.
@@ -131,24 +131,29 @@ OnStart ==
         { [header |-> blockchain[TRUSTED_HEIGHT],
            Commits |-> BC!VS(blockchain[TRUSTED_HEIGHT])] }
         (* The only request on the stack ("left", h1, h2) *)
-    /\ IF TRUSTED_HEIGHT < TO_VERIFY_HEIGHT
-       THEN
+    /\ IF minTrustedHeight > TRUSTED_HEIGHT
+       THEN \* the trusted header is outside of the trusting period
+         /\ outEvent' = [type |-> "finished", verdict |-> FALSE]
+         /\ UNCHANGED requestStack
+       ELSE IF TRUSTED_HEIGHT < TO_VERIFY_HEIGHT
+       THEN \* doing upward verification within the trusting period
          LET initStack == << [isLeft |-> TRUE,
                               startHeight |-> TRUSTED_HEIGHT,
                               endHeight |-> inEvent.heightToVerify] >>
          IN
          /\ requestStack' = initStack
          /\ outEvent' = RequestHeaderForTopRequest(initStack)
-       ELSE
          \* TODO: update the English spec to address h1 = h2
          \*       (otherwise, the light client would not terminate)
-         \* TODO: implement the downward verification?
+       ELSE
+         \* This spec does not implement the downward verification, which only checks hashes
          /\ outEvent' = [type |-> "finished", verdict |-> TRUE]
          /\ UNCHANGED requestStack
 
 (**
  Check whether commits in a signed header are correct with respect to the given
- validator set (DOMAIN votingPower) and votingPower.
+ validator set (DOMAIN votingPower) and votingPower. Additionally, check that
+ the header is still within the trusting period.
  *)
 Verify(pVotingPower, pSignedHdr) ==
     \* the implementation should check the hashes and other properties of the header
@@ -156,6 +161,8 @@ Verify(pVotingPower, pSignedHdr) ==
         TP == BC!PowerOfSet(pVotingPower, Validators)
         SP == BC!PowerOfSet(pVotingPower, pSignedHdr.Commits \intersect Validators)
     IN
+        \* the trusted header is still within the trusting period
+    /\ minTrustedHeight <= pSignedHdr.header.height
         \* the commits are signed by the validators
     /\ pSignedHdr.Commits \subseteq BC!VS(pSignedHdr.header)
         \* the 2/3s rule works
@@ -173,17 +180,14 @@ Verify(pVotingPower, pSignedHdr) ==
    - signedHdr is the signed header to verify (including commits)
  *)
 CheckSupport(pHeightToTrust, pHeightToVerify, pTrustedHdr, pSignedHdr) ==
-    IF minTrustedHeight > pHeightToTrust \* outside of the trusting period
-    THEN FALSE
-    ELSE
-      IF pHeightToVerify = pHeightToTrust + 1 \* adjacent headers
-      THEN pSignedHdr.header.VP = pTrustedHdr.NextVP
-      ELSE \* the general case: check 1/3 between the headers  
-        LET TP == BC!PowerOfSet(pTrustedHdr.NextVP, BC!NextVS(pTrustedHdr))
-            SP == BC!PowerOfSet(pTrustedHdr.NextVP,
-              pSignedHdr.Commits \intersect BC!NextVS(pTrustedHdr))
-        IN
-        3 * SP > TP
+    IF pHeightToVerify = pHeightToTrust + 1 \* adjacent headers
+    THEN pSignedHdr.header.VP = pTrustedHdr.NextVP
+    ELSE \* the general case: check 1/3 between the headers  
+      LET TP == BC!PowerOfSet(pTrustedHdr.NextVP, BC!NextVS(pTrustedHdr))
+          SP == BC!PowerOfSet(pTrustedHdr.NextVP,
+                              pSignedHdr.Commits \intersect BC!NextVS(pTrustedHdr))
+    IN
+    3 * SP > TP
 
 (* Make one step of bisection, roughly one stack frame of Bisection in the English spec *)
 OneStepOfBisection(pStoredSignedHeaders) ==
@@ -193,7 +197,7 @@ OneStepOfBisection(pStoredSignedHeaders) ==
         lhdr == CHOOSE shdr \in pStoredSignedHeaders: shdr.header.height = lh
         rhdr == CHOOSE shdr \in pStoredSignedHeaders: shdr.header.height = rh
     IN
-    IF Verify(lhdr.header.NextVP, rhdr) = FALSE
+    IF Verify(lhdr.header.VP, lhdr) = FALSE
     THEN [verdict |-> FALSE, newStack |-> <<(* empty *)>> ] \* TERMINATE immediately
     ELSE \* pass only the header lhdr.header and signed header rhdr
       IF CheckSupport(lh, rh, lhdr.header, rhdr)
@@ -203,7 +207,7 @@ OneStepOfBisection(pStoredSignedHeaders) ==
         THEN (* Sequential verification tells us that the header cannot be trusted. *)
             [verdict |-> FALSE, newStack |-> <<(* empty *)>>] \* TERMINATE immediately
         ELSE (*
-             Dichotomy: schedule search requests for the left and right branches
+             Bisection: schedule search requests for the left and right branches
              (and pop the top element off the stack).
              In contrast to the English spec, these requests are not processed immediately,
              but one-by-one in a depth-first order.
@@ -290,12 +294,13 @@ NeverFinishPositiveWithFaults ==
 \* Lite Client Accuracy: If header h was not generated by an instance of Tendermint consensus,
 \* then the lite client should never set trust(h) to true.
 CorrectnessInv ==
-    outEvent.type = "finished" /\ outEvent.verdict = TRUE
+    (outEvent.type = "finished" /\ outEvent.verdict = TRUE)
         => (\A shdr \in storedSignedHeaders: shdr.header = blockchain[shdr.header.height])
 
-PrecisionInv ==
-    outEvent.type = "finished" /\ outEvent.verdict = FALSE
-        => (\E shdr \in storedSignedHeaders: shdr.header /= blockchain[shdr.header.height])
+\* CorrectnessInv holds only under the assumption of the Tendermint security model.
+\* Hence, Correctness is restricted to the case when there are less than 1/3 of faulty validators.
+Correctness ==
+    []~tooManyFaults => CorrectnessInv
 
 \* There are no two headers of the same height
 NoDupsInv ==
@@ -331,7 +336,6 @@ StoredHeadersAreSoundOrNotTrusted ==
                \* or the left header is outside the trusting period, so no guarantees 
             \/ minTrustedHeight > left.header.height
 
-
 \* The lite client must always terminate under the given pre-conditions.
 \* E.g., assuming that the full node always replies.
 TerminationPre ==
@@ -360,15 +364,35 @@ PositiveBeforeTrustedHeaderExpires ==
 \*
 \* Note that Completeness assumes that the lite client communicates with a correct full node.
 \*
-\* We decompose completeness into Termination (liveness) and []PrecisionInv (safety).
-\* Once again, PrecisionInv is an inverse version of the safety property in Completeness,
+\* We decompose completeness into Termination (liveness) and Precision (safety).
+\* Once again, Precision is an inverse version of the safety property in Completeness,
 \* as A => B is logically equivalent to ~B => ~A. 
+PrecisionInv ==
+    (outEvent.type = "finished" /\ outEvent.verdict = FALSE)
+      => \/ minTrustedHeight > TRUSTED_HEIGHT \* outside of the trusting period
+         \/ \E shdr \in storedSignedHeaders:
+                 \* the full node lied to the lite client about the block header
+              \/ shdr.header /= blockchain[shdr.header.height]
+                 \* the full node lied to the lite client about the commits
+              \/ shdr.Commits /= BC!VS(shdr.header)
+
+\* the old invariant that was found to be buggy by TLC
+PrecisionBuggyInv ==
+    (outEvent.type = "finished" /\ outEvent.verdict = FALSE)
+      => \/ minTrustedHeight > TRUSTED_HEIGHT \* outside of the trusting period
+         \/ \E shdr \in storedSignedHeaders:
+              \* the full node lied to the lite client about the block header
+              shdr.header /= blockchain[shdr.header.height]
+
+\* Precision states that PrecisionInv always holds true.
+\* When we independently check Termination and PrecisionInv,
+\* there is no need to check Completeness.         
 Completeness ==
     Termination /\ []PrecisionInv
 
 (************************** MODEL CHECKING ************************************)
 (*
-  # Experiment 1.
+  # Experiment 1 (MWE: 2 validators + 1 full node).
   Run TLC with the following parameters:
   
   ULTIMATE_HEIGHT <- 3,
@@ -377,15 +401,17 @@ Completeness ==
   TRUSTED_HEIGHT <- 1,
   AllNodes <- { A_p1, A_p2 } \* choose symmetry reduction for model values
   
+   * Termination: satisfied after 17 min.
+   * PrecisionInv: satisfied after 58 min. (38M states, 7G disk space)
+   * Correctness: satisfied after 1 hour 15 min.
+   * CorrectnessInv: violation after 7 sec: lastCommit may deviate
+   * NoDupsInv: satisfied after 1 min.
    * StoredHeadersAreSound: violation after 9 sec.
    * StoredHeadersAreSoundOrNonTrusted: correct after 50 sec.
    * PositiveBeforeTrustedHeaderExpires: violation after 10 sec.
-   * PrecisionInv: violation after 3 sec.
-   * CorrectnessInv: violation after 7 sec: lastCommit may deviate
-   * Termination: satisfied after 17 min.
-   * NoDupsInv: satisfied after 1 min.
+   * PrecisionBuggyInv: violation after 3 sec.
 
-  # Experiment 2.
+  # Experiment 2 (the example that makes sense: 4 validators + 1 full node).
   Run TLC with the following parameters:
   
   ULTIMATE_HEIGHT <- 3,
@@ -395,14 +421,13 @@ Completeness ==
   AllNodes <- { A_p1, A_p2, A_p3, A_p4 } \* choose symmetry reduction for model values
   
    * Deadlocks: a deadlock occurs when minTrustedHeight > height.
-   * StoredHeadersAreSound: ??
-   * StoredHeadersAreSoundOrNonTrusted: ??
-   * CorrectnessInv: ???
    * PrecisionInv: ???
-   * Termination: 
+   * CorrectnessInv: ???
+   * Termination: ??? 
+   * StoredHeadersAreSoundOrNonTrusted: ???
  *)
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Nov 14 11:15:35 CET 2019 by igor
+\* Last modified Tue Nov 19 13:10:14 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
