@@ -195,7 +195,7 @@ OneStepOfBisection(pStoredSignedHeaders) ==
         lhdr == CHOOSE shdr \in pStoredSignedHeaders: shdr.header.height = lh
         rhdr == CHOOSE shdr \in pStoredSignedHeaders: shdr.header.height = rh
     IN
-    IF Verify(lhdr.header.VP, lhdr) = FALSE
+    IF Verify(rhdr.header.VP, rhdr) = FALSE
     THEN [verdict |-> FALSE, newStack |-> <<(* empty *)>> ] \* TERMINATE immediately
     ELSE \* pass only the header lhdr.header and signed header rhdr
       IF CheckSupport(lh, rh, lhdr.header, rhdr)
@@ -349,7 +349,7 @@ StoredHeadersAreSoundOrNotTrusted ==
     outEvent.type = "finished" /\ outEvent.verdict = TRUE
         =>
         \A left, right \in storedSignedHeaders: \* for every pair of different stored headers
-            \/ left = right
+            \/ left.header.height >= right.header.height
                \* either there is a header between them
             \/ \E middle \in storedSignedHeaders:
                 /\ left.header.height < middle.header.height
@@ -415,8 +415,8 @@ Completeness ==
 
 (************************** MODEL CHECKING ************************************)
 (*
-  # Experiment 1 (MWE: 2 validators + 1 full node).
-  Run TLC with the following parameters:
+  # Experiment 1 (2 validators + 1 full node, we found many logical bugs with that).
+  Run TLC with the following parameters (the figures are given for 3 CPU cores):
   
   ULTIMATE_HEIGHT <- 3,
   MAX_POWER <- 1,
@@ -424,13 +424,13 @@ Completeness ==
   TRUSTED_HEIGHT <- 1,
   AllNodes <- { A_p1, A_p2 } \* choose symmetry reduction for model values
   
-   * Termination: satisfied after 17 min.
-   * PrecisionInv: satisfied after 3 min 36 sec.
-   * Correctness: satisfied after 3 min 02 sec.
+   * Termination: satisfied after 13 min.
+   * PrecisionInv: satisfied after 42 sec.
+   * Correctness: satisfied after 45 sec.
    * CorrectnessInv: violation after 7 sec: lastCommit may deviate
-   * NoDupsInv: satisfied after 1 min.
+   * NoDupsInv: satisfied after 39 sec.
    * StoredHeadersAreSound: violation after 9 sec.
-   * StoredHeadersAreSoundOrNonTrusted: correct after 50 sec.
+   * StoredHeadersAreSoundOrNonTrusted: correct after 13 min.
    * PositiveBeforeTrustedHeaderExpires: violation after 10 sec.
    * PrecisionBuggyInv: violation after 3 sec.
 
@@ -452,5 +452,5 @@ Completeness ==
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Nov 19 21:35:43 CET 2019 by igor
+\* Last modified Fri Nov 22 14:18:27 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
