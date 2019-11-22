@@ -33,10 +33,10 @@ BlockHeaders == [
     \* the nodes who have voted on the previous block, the set itself instead of a hash
   (* in the implementation, only the hashes of V and NextV are stored in a block,
      as V and NextV are stored in the application state *) 
-  VP: UNION {Nodes \in SUBSET AllNodes \ {{}}: [Nodes -> Powers]},
+  VP: UNION {[Nodes -> Powers]: Nodes \in SUBSET AllNodes \ {{}}},
     \* the validators of this block together with their voting powers,
     \* i.e., a multi-set. We store the validators instead of the hash.
-  NextVP: UNION {Nodes \in SUBSET AllNodes \ {{}}: [Nodes -> Powers]}
+  NextVP: UNION {[Nodes -> Powers]: Nodes \in SUBSET AllNodes \ {{}}}
     \* the validators of the next block together with their voting powers,
     \* i.e., a multi-set. We store the next validators instead of the hash.
 ]
@@ -49,7 +49,7 @@ NextVS(header) == DOMAIN header.NextVP
 
 (* A signed header is just a header together with a set of commits *)
 \* TODO: Commits is the set of PRECOMMIT messages
-SignedHeaders == BlockHeaders \X Commits
+SignedHeaders == [header: BlockHeaders, Commits: Commits]
 
 VARIABLES
     tooManyFaults,
@@ -130,6 +130,16 @@ FaultAssumption(pFaultyNodes, pMinTrustedHeight, pBlockchain) ==
     \A h \in pMinTrustedHeight..Len(pBlockchain):
         IsCorrectPower(pFaultyNodes, pBlockchain[h].NextVP)
 
+
+(* A signed header whose commit coincides with the last commit of a block,
+   unless the commits are made by the faulty nodes *)
+SoundSignedHeaders(ht) ==
+    { sh \in SignedHeaders:
+        \/ sh.header = blockchain[ht] \* signed by correct and faulty (maybe)
+        \/ sh.Commits \subseteq Faulty /\ sh.header.height = ht \* signed only by faulty
+    }
+
+
 (* Append a new block on the blockchain.
    Importantly, more than 2/3 of voting power in the next set of validators
    belongs to the correct processes. *)       
@@ -188,6 +198,7 @@ AdvanceTime ==
 OneMoreFault ==
   /\ \E n \in AllNodes \ Faulty:
       /\ Faulty' = Faulty \cup {n}
+      /\ Faulty' /= AllNodes \* at least process remains non-faulty
       /\ tooManyFaults' = ~FaultAssumption(Faulty', minTrustedHeight, blockchain)
   /\ UNCHANGED <<height, minTrustedHeight, blockchain>>
 
@@ -211,7 +222,7 @@ Next ==
 NeverStuck ==
   \/ tooManyFaults
   \/ height = ULTIMATE_HEIGHT
-  \/ minTrustedHeight > height \* the bonding period has expired
+  \/ minTrustedHeight > height \* the trusting period has expired
   \/ ENABLED AdvanceChain
 
 (* The next validator set is never empty *)
@@ -236,5 +247,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Nov 07 17:16:21 CET 2019 by igor
+\* Last modified Tue Nov 19 11:15:32 CET 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor
