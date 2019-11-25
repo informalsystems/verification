@@ -1,25 +1,31 @@
------------------------------ MODULE Blockchain -----------------------------
-(* This is a high-level specification of Tendermint blockchain
+----------------------------- MODULE BlockchainP1 -----------------------------
+(* 
+   This is simplification of ../../spec/light-client/Blockchain.tla that uses
+   the following assumptions:
+   
+   - The validators can only have voting power of 1.
+   - As a result, we are using sets and cardinalities instead of functions
+     (effectively, multi-sets) and recursive operators.
+     
+   ----------------------------------------------------------------------------  
+
+   This is a high-level specification of Tendermint blockchain
    that is designed specifically for:
    
    (1) Lite client, and
    (2) Fork accountability.
  *)
-EXTENDS Integers, Sequences
+EXTENDS Integers, Sequences, FiniteSets
 
 Min(a, b) == IF a < b THEN a ELSE b
 
 CONSTANT
   AllNodes,
     (* a set of all nodes that can act as validators (correct and faulty) *)
-  ULTIMATE_HEIGHT,
+  ULTIMATE_HEIGHT
     (* a maximal height that can be ever reached (modelling artifact) *)
-  MAX_POWER
-    (* a maximal voting power of a single node *)
 
 Heights == 0..ULTIMATE_HEIGHT   (* possible heights *)
-
-Powers == 1..MAX_POWER          (* possible voting powers *)
 
 (* A commit is just a set of nodes who have committed the block *)
 Commits == SUBSET AllNodes
@@ -33,19 +39,19 @@ BlockHeaders == [
     \* the nodes who have voted on the previous block, the set itself instead of a hash
   (* in the implementation, only the hashes of V and NextV are stored in a block,
      as V and NextV are stored in the application state *) 
-  VP: UNION {[Nodes -> Powers]: Nodes \in SUBSET AllNodes \ {{}}},
+  VS: SUBSET AllNodes \ {{}},
     \* the validators of this block together with their voting powers,
     \* i.e., a multi-set. We store the validators instead of the hash.
-  NextVP: UNION {[Nodes -> Powers]: Nodes \in SUBSET AllNodes \ {{}}}
+  NextVS: SUBSET AllNodes \ {{}}
     \* the validators of the next block together with their voting powers,
     \* i.e., a multi-set. We store the next validators instead of the hash.
 ]
 
 (* A convenience operator that retrieves the validator set from a header *)
-VS(header) == DOMAIN header.VP
+VS(header) == header.VS
 
 (* A convenience operator that retrieves the next validator set from a header *)
-NextVS(header) == DOMAIN header.NextVP
+NextVS(header) == header.NextVS
 
 (* A signed header is just a header together with a set of commits *)
 \* TODO: Commits is the set of PRECOMMIT messages
@@ -78,57 +84,50 @@ Corr == AllNodes \ Faulty
 (* in the future, we may extract it in a module on its own *)
 
 (*
-Compute the total voting power of a subset of pNodes \subseteq AllNodes,
-whose individual voting powers are given with a function
-pVotingPower \in AllNodes -> Powers.
+  Compute the total voting power of a subset of pNodes \subseteq AllNodes,
+  restricted to a validator set. In BlockchainP1, this is fairly trivial.
 *)  
-RECURSIVE PowerOfSet(_, _)
-PowerOfSet(pVotingPower, pNodes) ==
-    IF pNodes = {}
-    THEN 0
-    ELSE LET node == CHOOSE n \in pNodes: TRUE IN
-        (* compute the voting power for the nodes in Nodes \ {node}
-           and sum it up with the node's power *)
-        pVotingPower[node] + PowerOfSet(pVotingPower, pNodes \ {node})
+PowerOfSet(pValidators, pNodes) ==
+    Cardinality(pValidators \intersect pNodes)
 
 (*
- Given a function pVotingPower \in D -> Powers for some D \subseteq AllNodes
- and pNodes \subseteq D, test whether the set pNodes \subseteq AllNodes has
+ Given a set of validators pValidators \subseteq AllNodes
+ and pNodes \subseteq pValidators, test whether the set pNodes \subseteq AllNodes has
  more than 2/3 of voting power among the nodes in D.
  *)
-TwoThirds(pVotingPower, pNodes) ==
-    LET TP == PowerOfSet(pVotingPower, DOMAIN pVotingPower)
-        SP == PowerOfSet(pVotingPower, pNodes)
+TwoThirds(pValidators, pNodes) ==
+    LET TP == Cardinality(pValidators)
+        SP == PowerOfSet(pValidators, pNodes)
     IN
     3 * SP > 2 * TP \* when thinking in real numbers, not integers: SP > 2.0 / 3.0 * TP 
 
 (*
- Given a function pVotingPower \in D -> Powers for some D \subseteq pNodes,
+ Given a set of validators pValidators \subseteq AllNodes
  and a set of pFaultyNodes, test whether the voting power of the correct
  nodes in pNodes is more than 2/3 of the voting power of the faulty nodes
  among the nodes in pNodes.
  *)
-IsCorrectPowerForSet(pFaultyNodes, pVotingPower, pNodes) ==
+IsCorrectPowerForSet(pFaultyNodes, pValidators, pNodes) ==
     LET FN == pFaultyNodes \intersect pNodes  \* faulty nodes in pNodes
         CN == pNodes \ pFaultyNodes           \* correct nodes in pNodes
-        CP == PowerOfSet(pVotingPower, CN)   \* power of the correct nodes
-        FP == PowerOfSet(pVotingPower, FN)   \* power of the faulty nodes
+        CP == PowerOfSet(pValidators, CN)   \* power of the correct nodes
+        FP == PowerOfSet(pValidators, FN)   \* power of the faulty nodes
     IN
     \* CP + FP = TP is the total voting power, so we write CP > 2.0 / 3 * TP as follows:
     CP > 2 * FP \* Note: when FP = 0, this implies CP > 0.
 
 (*
- Given a function votingPower \in D -> Power for some D \subseteq Nodes,
- and a set of FaultyNodes, test whether the voting power of the correct nodes in D
+ Given a set of validators pValidators \subseteq AllNodes
+ and a set of pFaultyNodes, test whether the voting power of the correct nodes in D
  is more than 2/3 of the voting power of the faulty nodes in D.
  *)
-IsCorrectPower(pFaultyNodes, pVotingPower) ==
-    IsCorrectPowerForSet(pFaultyNodes, pVotingPower, DOMAIN pVotingPower)
+IsCorrectPower(pFaultyNodes, pValidators) ==
+    IsCorrectPowerForSet(pFaultyNodes, pValidators, pValidators)
     
 (* This is what we believe is the assumption about failures in Tendermint *)     
 FaultAssumption(pFaultyNodes, pMinTrustedHeight, pBlockchain) ==
     \A h \in pMinTrustedHeight..Len(pBlockchain):
-        IsCorrectPower(pFaultyNodes, pBlockchain[h].NextVP)
+        IsCorrectPower(pFaultyNodes, pBlockchain[h].NextVS)
 
 
 (* A signed header whose commit coincides with the last commit of a block,
@@ -147,11 +146,10 @@ AppendBlock ==
   LET last == blockchain[Len(blockchain)] IN
   \E lastCommit \in SUBSET (VS(last)) \ {{}},
      NextV \in SUBSET AllNodes \ {{}}:
-     \E NextVP \in [NextV -> Powers]:
     LET new == [ height |-> height + 1, lastCommit |-> lastCommit,
-                 VP |-> last.NextVP, NextVP |-> NextVP ] IN
-    /\ TwoThirds(last.VP, lastCommit)
-    /\ IsCorrectPower(Faulty, NextVP) \* the correct validators have >2/3 of power
+                 VS |-> last.NextVS, NextVS |-> NextV ] IN
+    /\ TwoThirds(last.VS, lastCommit)
+    /\ IsCorrectPower(Faulty, NextV) \* the correct validators have >2/3 of power
     /\ blockchain' = Append(blockchain, new)
     /\ height' = height + 1
 
@@ -163,12 +161,10 @@ Init ==
   /\ tooManyFaults = FALSE  \* there are no faults
   (* pick a genesis block of all nodes where next correct validators have >2/3 of power *)
   /\ \E NextV \in SUBSET AllNodes:          \* pick a next validator set
-       \E NextVP \in [NextV -> Powers]:     \* and pick voting powers to every node
-         LET VP == [n \in AllNodes |-> 1]
-             \* assume that the validators of the genesis have voting power of 1
+         LET \* assume that the genesis contains all the nodes
              \* and construct the genesis block
              genesis == [ height |-> 1, lastCommit |-> {},
-                          VP |-> VP, NextVP |-> NextVP]
+                          VS |-> AllNodes, NextVS |-> NextV]
          IN
          /\ NextV /= {}     \* assume that there is at least one next validator 
          /\ blockchain = <<genesis>> \* initially, blockchain contains only the genesis
@@ -247,5 +243,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Nov 19 11:15:32 CET 2019 by igor
+\* Last modified Fri Nov 22 15:55:50 CET 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor

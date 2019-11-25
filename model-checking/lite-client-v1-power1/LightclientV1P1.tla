@@ -1,5 +1,13 @@
----------------------------- MODULE Lightclient ----------------------------
+---------------------------- MODULE LightclientV1P1 --------------------------
 (*
+   This is simplification of ../../spec/light-client/Lightclient.tla that uses
+   the following assumptions:
+   
+   - The validators can only have voting power of 1.
+   - As a result, we are using sets and cardinalities instead of functions
+     (effectively, multi-sets) and recursive operators.
+ * ---------------------------------------------------------------------------
+ *
  * A state-machine specification of the lite client, following the English spec:
  * https://github.com/tendermint/tendermint/blob/master/docs/spec/consensus/light-client.md
  *
@@ -9,7 +17,7 @@
  * multiple requests at the same time, e.g., to reduce latency.
  *) 
 
-EXTENDS Integers, Sequences
+EXTENDS Integers, Sequences, FiniteSets
 
 \* the parameters of Lite Client
 CONSTANTS
@@ -37,10 +45,8 @@ envvars == <<inEvent>>
 CONSTANTS
   AllNodes,
     (* a set of all nodes that can act as validators (correct and faulty) *)
-  ULTIMATE_HEIGHT,
+  ULTIMATE_HEIGHT
     (* a maximal height that can be ever reached (modelling artifact) *)
-  MAX_POWER
-    (* a maximal voting power of a single node *)
 
 \* the state variables of Blockchain, see Blockchain.tla for the details
 VARIABLES tooManyFaults, height, minTrustedHeight, blockchain, Faulty
@@ -52,7 +58,7 @@ bcvars == <<tooManyFaults, height, minTrustedHeight, blockchain, Faulty>>
    We could write EXTENDS Blockchain, but then all the constants and state variables
    would be hidden inside the Blockchain module.
  *) 
-BC == INSTANCE Blockchain WITH tooManyFaults <- tooManyFaults, height <- height,
+BC == INSTANCE BlockchainP1 WITH tooManyFaults <- tooManyFaults, height <- height,
   minTrustedHeight <- minTrustedHeight, blockchain <- blockchain, Faulty <- Faulty
 
 (**************** Environment: User + Full node *************************)
@@ -150,14 +156,13 @@ OnStart ==
 
 (**
  Check whether commits in a signed header are correct with respect to the given
- validator set (DOMAIN votingPower) and votingPower. Additionally, check that
+ validator set pValidators. Additionally, check that
  the header is still within the trusting period.
  *)
-Verify(pVotingPower, pSignedHdr) ==
+Verify(pValidators, pSignedHdr) ==
     \* the implementation should check the hashes and other properties of the header
-    LET Validators == DOMAIN pVotingPower
-        TP == BC!PowerOfSet(pVotingPower, Validators)
-        SP == BC!PowerOfSet(pVotingPower, pSignedHdr.Commits \intersect Validators)
+    LET TP == Cardinality(pValidators)
+        SP == Cardinality(pSignedHdr.Commits \intersect pValidators)
     IN
         \* the trusted header is still within the trusting period
     /\ minTrustedHeight <= pSignedHdr.header.height
@@ -179,11 +184,10 @@ Verify(pVotingPower, pSignedHdr) ==
  *)
 CheckSupport(pHeightToTrust, pHeightToVerify, pTrustedHdr, pSignedHdr) ==
     IF pHeightToVerify = pHeightToTrust + 1 \* adjacent headers
-    THEN pSignedHdr.header.VP = pTrustedHdr.NextVP
+    THEN BC!VS(pSignedHdr.header) = BC!NextVS(pTrustedHdr)
     ELSE \* the general case: check 1/3 between the headers  
-      LET TP == BC!PowerOfSet(pTrustedHdr.NextVP, BC!NextVS(pTrustedHdr))
-          SP == BC!PowerOfSet(pTrustedHdr.NextVP,
-                              pSignedHdr.Commits \intersect BC!NextVS(pTrustedHdr))
+      LET TP == Cardinality(BC!NextVS(pTrustedHdr))
+          SP == Cardinality(pSignedHdr.Commits \intersect BC!NextVS(pTrustedHdr))
     IN
     3 * SP > TP
 
@@ -195,7 +199,7 @@ OneStepOfBisection(pStoredSignedHeaders) ==
         lhdr == CHOOSE shdr \in pStoredSignedHeaders: shdr.header.height = lh
         rhdr == CHOOSE shdr \in pStoredSignedHeaders: shdr.header.height = rh
     IN
-    IF Verify(rhdr.header.VP, rhdr) = FALSE
+    IF Verify(BC!VS(rhdr.header), rhdr) = FALSE
     THEN [verdict |-> FALSE, newStack |-> <<(* empty *)>> ] \* TERMINATE immediately
     ELSE \* pass only the header lhdr.header and signed header rhdr
       IF CheckSupport(lh, rh, lhdr.header, rhdr)
@@ -452,5 +456,5 @@ Completeness ==
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Nov 22 14:18:27 CET 2019 by igor
+\* Last modified Fri Nov 22 16:14:49 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
