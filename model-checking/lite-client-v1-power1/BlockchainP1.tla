@@ -17,6 +17,12 @@
  *)
 EXTENDS Integers, Sequences, FiniteSets
 
+(* APALACHE *)
+a <: b == a
+
+NT == STRING \* the type of nodes (it could be Int as well)
+(* END OF APALACHE *)
+
 Min(a, b) == IF a < b THEN a ELSE b
 
 CONSTANT
@@ -39,13 +45,16 @@ BlockHeaders == [
     \* the nodes who have voted on the previous block, the set itself instead of a hash
   (* in the implementation, only the hashes of V and NextV are stored in a block,
      as V and NextV are stored in the application state *) 
-  VS: SUBSET AllNodes \ {{}},
+  VS: SUBSET AllNodes(* \ {{} <: {NT}}*),
     \* the validators of this block together with their voting powers,
     \* i.e., a multi-set. We store the validators instead of the hash.
-  NextVS: SUBSET AllNodes \ {{}}
+  NextVS: SUBSET AllNodes(* \ {{} <: {NT}}*)
     \* the validators of the next block together with their voting powers,
     \* i.e., a multi-set. We store the next validators instead of the hash.
 ]
+
+\* a hint for apalache about the type of an element of BlockHeaders
+BHT == [height |-> Int, lastCommit |-> {NT}, VS |-> {NT}, NextVS |-> {NT}]
 
 (* A convenience operator that retrieves the validator set from a header *)
 VS(header) == header.VS
@@ -56,6 +65,9 @@ NextVS(header) == header.NextVS
 (* A signed header is just a header together with a set of commits *)
 \* TODO: Commits is the set of PRECOMMIT messages
 SignedHeaders == [header: BlockHeaders, Commits: Commits]
+
+\* a hint for apalache about the type of an element of SignedHeaders
+SHT == [header |-> BHT, Commits |-> {NT}]
 
 VARIABLES
     tooManyFaults,
@@ -126,8 +138,9 @@ IsCorrectPower(pFaultyNodes, pValidators) ==
     
 (* This is what we believe is the assumption about failures in Tendermint *)     
 FaultAssumption(pFaultyNodes, pMinTrustedHeight, pBlockchain) ==
-    \A h \in pMinTrustedHeight..Len(pBlockchain):
-        IsCorrectPower(pFaultyNodes, pBlockchain[h].NextVS)
+    \A h \in 1..ULTIMATE_HEIGHT:
+        (pMinTrustedHeight <= h /\ h <= Len(pBlockchain))
+            => IsCorrectPower(pFaultyNodes, pBlockchain[h].NextVS)
 
 
 (* A signed header whose commit coincides with the last commit of a block,
@@ -144,8 +157,8 @@ SoundSignedHeaders(ht) ==
    belongs to the correct processes. *)       
 AppendBlock ==
   LET last == blockchain[Len(blockchain)] IN
-  \E lastCommit \in SUBSET (VS(last)) \ {{}},
-     NextV \in SUBSET AllNodes \ {{}}:
+  \E lastCommit \in SUBSET (VS(last)) \ {{} <: {NT} },
+     NextV \in SUBSET AllNodes \ {{} <: {NT}}:
     LET new == [ height |-> height + 1, lastCommit |-> lastCommit,
                  VS |-> last.NextVS, NextVS |-> NextV ] IN
     /\ TwoThirds(last.VS, lastCommit)
@@ -157,17 +170,17 @@ AppendBlock ==
 Init ==
   /\ height = 1             \* there is just genesis block
   /\ minTrustedHeight = 1   \* the genesis is initially trusted
-  /\ Faulty = {}            \* initially, there are no faults
+  /\ Faulty = {} <: {NT}           \* initially, there are no faults
   /\ tooManyFaults = FALSE  \* there are no faults
   (* pick a genesis block of all nodes where next correct validators have >2/3 of power *)
   /\ \E NextV \in SUBSET AllNodes:          \* pick a next validator set
          LET \* assume that the genesis contains all the nodes
              \* and construct the genesis block
-             genesis == [ height |-> 1, lastCommit |-> {},
+             genesis == [ height |-> 1, lastCommit |-> {} <: {NT},
                           VS |-> AllNodes, NextVS |-> NextV]
          IN
-         /\ NextV /= {}     \* assume that there is at least one next validator 
-         /\ blockchain = <<genesis>> \* initially, blockchain contains only the genesis
+         /\ NextV /= {} <: {NT}    \* assume that there is at least one next validator 
+         /\ blockchain = <<genesis>> <: Seq(BHT) \* initially, blockchain contains only the genesis
 
 (********************* BLOCKCHAIN ACTIONS ********************************)
           
@@ -186,7 +199,10 @@ AdvanceChain ==
   As a result, the blockchain may move out of the faulty zone.
   *)
 AdvanceTime ==
-  /\ minTrustedHeight' \in (minTrustedHeight + 1) .. Min(height + 1, ULTIMATE_HEIGHT)
+    \* a modification for apalache
+  /\ minTrustedHeight' \in
+    {h \in Heights:
+     h > minTrustedHeight /\ h <= height + 1 /\ h <= ULTIMATE_HEIGHT }
   /\ tooManyFaults' = ~FaultAssumption(Faulty, minTrustedHeight', blockchain)
   /\ UNCHANGED <<height, blockchain, Faulty>>
 
@@ -223,8 +239,8 @@ NeverStuck ==
 
 (* The next validator set is never empty *)
 NextVSNonEmpty ==
-    \A h \in 1..Len(blockchain):
-      NextVS(blockchain[h]) /= {}
+    \A h \in 1..ULTIMATE_HEIGHT:
+      (h <= Len(blockchain)) => NextVS(blockchain[h]) /= ({} <: {NT})
 
 (* False properties that can be checked with TLC, to see interesting behaviors *)
 
@@ -243,5 +259,5 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Nov 22 15:55:50 CET 2019 by igor
+\* Last modified Tue Nov 26 13:23:21 CET 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor
