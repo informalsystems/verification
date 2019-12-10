@@ -23,17 +23,12 @@ EXTENDS Integers, Sequences, FiniteSets
 a <: b == a
 
 
-TRUSTED_HEIGHT == 1
-TO_VERIFY_HEIGHT == 3
-
 \* the parameters of Lite Client
-(*
 CONSTANTS
   TRUSTED_HEIGHT,
     (* an index of the block header that the light client trusts by social consensus *)
   TO_VERIFY_HEIGHT
     (* an index of the block header that the light client tries to verify *)
- *)
 
 VARIABLES       (* see TypeOK below for the variable types *)
   state,        (* the current state of the light client *)
@@ -50,17 +45,11 @@ envvars == <<inEvent>>
 
 (******************* Blockchain instance ***********************************)
 
-\* the parameters that are propagated into Blockchain
-AllNodes == { "p1", "p2", "p3", "p4" }
-ULTIMATE_HEIGHT == 3
-
-(*
 CONSTANTS
   AllNodes,
     (* a set of all nodes that can act as validators (correct and faulty) *)
   ULTIMATE_HEIGHT
     (* a maximal height that can be ever reached (modelling artifact) *)
- *)   
 
 \* the state variables of Blockchain, see Blockchain.tla for the details
 VARIABLES tooManyFaults, height, minTrustedHeight, blockchain, Faulty
