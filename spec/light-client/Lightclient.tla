@@ -336,7 +336,7 @@ StoredHeadersAreSound ==
     outEvent.type = "finished" /\ outEvent.verdict = TRUE
         =>
         \A left, right \in storedSignedHeaders: \* for every pair of different stored headers
-            \/ left = right
+            \/ left.header.height >= right.header.height
                \* either there is a header between them
             \/ \E middle \in storedSignedHeaders:
                 /\ left.header.height < middle.header.height
@@ -452,5 +452,5 @@ Completeness ==
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Nov 22 14:18:27 CET 2019 by igor
+\* Last modified Sat Nov 30 19:55:46 CET 2019 by igor
 \* Created Wed Oct 02 16:39:42 CEST 2019 by igor
