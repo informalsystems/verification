@@ -1,12 +1,15 @@
------------------------------ MODULE TendermintAccountability -----------------------------
+----------------------------- MODULE TendermintAccountabilityApa -----------------------------
 (*
  A TLA+ specification of subset of Tendermint consensus needed to formalize fork accountability 
  protocol.
-
+ 
+ This is the version for compatibility with Apalache.
  *)
 
 EXTENDS Integers, FiniteSets
 
+CONSTANTS
+    StartId \* the id of the starting process in the proposer round robin
 
 N == 4 \* the total number of processes: correct and faulty
 T == 1 \* an upper bound on the number of Byzantine processes
@@ -19,9 +22,22 @@ InvalidValues == {2}    \* e.g., sent by a Byzantine process
 Values == ValidValues \cup InvalidValues \* all values
 nil == -1
 
-\* these are two tresholds that are used in the algorithm
+\* these are two thresholds that are used in the algorithm
 THRESHOLD1 == T + 1 
 THRESHOLD2 == 2 * T + 1 
+
+(* APALACHE *)
+a <: b == a
+
+MT == [type |-> STRING, src |-> Int, round |-> Int,
+       proposal |-> Int, validRound |-> Int, id |-> Int]
+       
+AsMsg(m) == m <: MT
+SetOfMsgs(S) == S <: {MT}       
+EmptyMsgSet == SetOfMsgs({})
+
+ConstInit == StartId \in 1..N
+(* END-OF-APALACHE *)
 
 
 \* these variables are exactly as in the pseudo-code
@@ -41,7 +57,7 @@ vars == <<round, step, decision, lockedValue, lockedRound, validValue,
 \* A function which gives the proposer for a given round at a given height.
 \* Here we use round robin. As Procs and Faulty are assigned non-deterministically,
 \* it does not really matter who starts first.
-Proposer(rd) == 1 + (rd % N)
+Proposer(rd) == 1 + ((StartId + rd) % N)
 
 Id(v) == v
 
@@ -57,29 +73,29 @@ Init ==
     /\ lockedRound = [p \in Procs |-> -1]
     /\ validValue = [p \in Procs |-> nil]
     /\ validRound = [p \in Procs |-> -1]
-    /\ msgsPrevote = [rd \in Rounds |-> {}]
-    /\ msgsPrecommit = [rd \in Rounds |-> {}]
-    /\ msgsPropose = [rd \in Rounds |-> {}]
-    /\ msgsReceived = [p \in Procs |-> {}]
+    /\ msgsPrevote = [rd \in Rounds |-> EmptyMsgSet]
+    /\ msgsPrecommit = [rd \in Rounds |-> EmptyMsgSet]
+    /\ msgsPropose = [rd \in Rounds |-> EmptyMsgSet]
+    /\ msgsReceived = [p \in Procs |-> EmptyMsgSet]
     
 FaultyMessages == \* the messages that can be sent by the faulty processes
-    ([type: {"PROPOSAL"}, src: Faulty,
-              round: Rounds, proposal: Values, validRound: Rounds \cup {-1}])
+    (SetOfMsgs([type: {"PROPOSAL"}, src: Faulty,
+              round: Rounds, proposal: Values, validRound: Rounds \cup {-1}]))
        \cup
-    ([type: {"PREVOTE"}, src: Faulty, round: Rounds, id: Values])
+    (SetOfMsgs([type: {"PREVOTE"}, src: Faulty, round: Rounds, id: Values]))
        \cup
-    ([type: {"PRECOMMIT"}, src: Faulty, round: Rounds, id: Values])
+    (SetOfMsgs([type: {"PRECOMMIT"}, src: Faulty, round: Rounds, id: Values]))
     
 
 \* lines 22-27        
 UponProposalInPropose(p) ==
     \E v \in Values:
       /\ step[p] = "PROPOSE" \* line 22
-      /\ ([type |-> "PROPOSAL", src |-> Proposer(round[p]),
-           round |-> round[p], proposal |-> v, validRound |-> -1]) \in msgsPropose[round[p]] \* line 22
+      /\ (AsMsg([type |-> "PROPOSAL", src |-> Proposer(round[p]),
+           round |-> round[p], proposal |-> v, validRound |-> -1])) \in msgsPropose[round[p]] \* line 22
       /\ LET isGood == IsValid(v) /\ (lockedRound[p] = -1 \/ lockedValue[p] = v) IN \* line 23
-         LET newMsg == ({[type |-> "PREVOTE", src |-> p,
-                     round |-> round[p], id |-> IF isGood THEN Id(v) ELSE nil]})
+         LET newMsg == ({AsMsg([type |-> "PREVOTE", src |-> p,
+                     round |-> round[p], id |-> IF isGood THEN Id(v) ELSE nil])})
          IN  \* lines 24-26
          msgsPrevote' = [msgsPrevote EXCEPT ![round[p]] =
                             msgsPrevote[round[p]] \cup newMsg] 
@@ -92,13 +108,13 @@ UponProposalInPropose(p) ==
 UponProposalInProposeAndPrevote(p) ==
     \E v \in Values, vr \in Rounds:
       /\ step[p] = "PROPOSE" /\ 0 <= vr /\ vr < round[p] \* line 28, the while part
-      /\ ([type |-> "PROPOSAL", src |-> Proposer(round[p]),
-           round |-> round[p], proposal |-> v, validRound |-> vr]) \in msgsPropose[round[p]] \* line 28
+      /\ (AsMsg([type |-> "PROPOSAL", src |-> Proposer(round[p]),
+           round |-> round[p], proposal |-> v, validRound |-> vr])) \in msgsPropose[round[p]] \* line 28
       /\ LET PV == { m \in msgsPrevote[vr]: m.id = Id(v) } IN
          Cardinality(PV) >= THRESHOLD2 \* line 28
       /\ LET isGood == IsValid(v) /\ (lockedRound[p] <= vr \/ lockedValue[p] = v) IN \* line 29
-         LET newMsg == ({[type |-> "PREVOTE", src |-> p, 
-                     round |-> round[p], id |-> IF isGood THEN Id(v) ELSE nil]})
+         LET newMsg == ({AsMsg([type |-> "PREVOTE", src |-> p, 
+                     round |-> round[p], id |-> IF isGood THEN Id(v) ELSE nil])})
          IN \* lines 30-32
          msgsPrevote' = [msgsPrevote EXCEPT ![round[p]] =
                             msgsPrevote[round[p]] \cup newMsg] 
@@ -112,9 +128,9 @@ InsertProposal(p) ==
      LET proposal == IF validValue[p] /= nil THEN validValue[p] ELSE v IN
      LET newMsg ==
         IF p = Proposer(round[p]) /\ step[p] = "PROPOSE"
-        THEN {[type |-> "PROPOSAL", src |-> p, round |-> round[p],
-          proposal |-> proposal, validRound |-> validRound[p]]}
-        ELSE {}
+        THEN {AsMsg([type |-> "PROPOSAL", src |-> p, round |-> round[p],
+          proposal |-> proposal, validRound |-> validRound[p]])}
+        ELSE EmptyMsgSet
      IN
      msgsPropose' = [msgsPropose EXCEPT ![round[p]] =
                             msgsPropose[round[p]] \cup newMsg]  
@@ -126,7 +142,7 @@ InsertProposal(p) ==
 UponQuorumOfPrevotesAny(p) ==
       /\ step[p] = "PREVOTE" \* line 34 and 61
       /\ Cardinality(msgsPrevote[round[p]]) >= THRESHOLD2 \* line 34 TODO: Note that multiple messages from the same (faulty) process will trigger this rule!  
-      /\ LET newMsg == [type |-> "PRECOMMIT", src |-> p, round |-> round[p], id |-> nil] IN
+      /\ LET newMsg == AsMsg([type |-> "PRECOMMIT", src |-> p, round |-> round[p], id |-> nil]) IN
          msgsPrecommit' = [msgsPrecommit EXCEPT ![round[p]] =
                             msgsPrecommit[round[p]] \cup {newMsg}] 
       /\ step' = [step EXCEPT ![p] = "PRECOMMIT"]
@@ -138,9 +154,9 @@ UponQuorumOfPrevotesAny(p) ==
 UponProposalInPrevoteOrCommitAndPrevote(p) ==
     \E v \in ValidValues, vr \in Rounds \cup {-1}:
       /\ step[p] \in {"PREVOTE", "PRECOMMIT"} \* line 36
-      /\ ([type |-> "PROPOSAL", src |-> Proposer(round[p]),
-           round |-> round[p], proposal |-> v, validRound |-> vr]) \in msgsPropose[round[p]] \* line 36
-      /\ LET PV == { m \in msgsPrevote[round[p]]: m.is = Id(v) } IN
+      /\ (AsMsg([type |-> "PROPOSAL", src |-> Proposer(round[p]),
+           round |-> round[p], proposal |-> v, validRound |-> vr])) \in msgsPropose[round[p]] \* line 36
+      /\ LET PV == { m \in msgsPrevote[round[p]]: m.id = Id(v) } IN
          Cardinality(PV) >= THRESHOLD2 \* line 36
       /\ lockedValue' =
          IF step[p] = "PREVOTE"
@@ -152,8 +168,8 @@ UponProposalInPrevoteOrCommitAndPrevote(p) ==
          ELSE lockedRound \* else of line 37
       /\ LET newMsgs ==
            IF step[p] = "PREVOTE"
-           THEN {[type |-> "PRECOMMIT", src |-> p, round |-> round[p], id |-> Id(v)]} \* line 40
-           ELSE {} 
+           THEN {AsMsg([type |-> "PRECOMMIT", src |-> p, round |-> round[p], id |-> Id(v)])} \* line 40
+           ELSE EmptyMsgSet 
          IN \* else of line 37
          msgsPrecommit' = [msgsPrecommit EXCEPT ![round[p]] =
                             msgsPrecommit[round[p]] \cup newMsgs] \* line 40, or else of 37
@@ -182,8 +198,8 @@ UponQuorumOfPrecommitsAny(p) ==
 UponProposalInPrecommitNoDecision(p) ==
     /\ decision[p] = nil \* line 49
     /\ \E v \in ValidValues (* line 50*) , r \in Rounds, vr \in Rounds \cup {-1}:
-      /\ ([type |-> "PROPOSAL", src |-> Proposer(r), 
-           round |-> r, proposal |-> v, validRound |-> vr]) \in msgsPropose[r] \* line 49
+      /\ (AsMsg([type |-> "PROPOSAL", src |-> Proposer(r), 
+           round |-> r, proposal |-> v, validRound |-> vr])) \in msgsPropose[r] \* line 49
       /\ LET PV == { m \in msgsPrecommit[r]: m.id = Id(v) } IN
          Cardinality(PV) >= THRESHOLD2 \* line 49
       /\ decision' = [decision EXCEPT ![p] = v] \* update the decision, line 51
@@ -207,7 +223,7 @@ InsertFaultyPrecommitMessage ==
                      
 InsertFaultyProposalMessage == 
     \E srcA \in Faulty, r \in Rounds, idV \in Values:
-        LET newMsg == [type |-> "PROPOSAL", src |-> srcA, round |-> r, id |-> idV] IN
+        LET newMsg == AsMsg([type |-> "PROPOSAL", src |-> srcA, round |-> r, id |-> idV]) IN
          msgsPropose' = [msgsPropose EXCEPT ![r] = msgsPropose[r] \cup {newMsg}] 
         /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue, step,
                      validRound, msgsPrecommit, msgsPrevote, msgsReceived>>                                            
