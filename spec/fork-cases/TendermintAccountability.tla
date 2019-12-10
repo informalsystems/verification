@@ -31,13 +31,12 @@ VARIABLES round, step, decision, lockedValue, lockedRound, validValue, validRoun
 VARIABLES msgsPropose, \* the propose messages broadcasted in the system, a function Heights \X Rounds -> set of messages
           msgsPrevote, \* the prevote messages broadcasted in the system, a function Heights \X Rounds -> set of messages  
           msgsPrecommit, \* the precommit messages broadcasted in the system, a function Heights \X Rounds -> set of messages  
-          msgsReceived,  \* set of received messages a process acted on (that triggered some rule), a function p \in Procs -> set of messages  
-          oldEvents  \* the messages processed once, as expressed by "for the first time"
+          msgsReceived  \* set of received messages a process acted on (that triggered some rule), a function p \in Procs -> set of messages  
  
  
 \* this is needed for UNCHANGED
 vars == <<round, step, decision, lockedValue, lockedRound, validValue,
-          validRound, msgsPropose, msgsPrevote, msgsPrecommit, msgsReceived, oldEvents>>
+          validRound, msgsPropose, msgsPrevote, msgsPrecommit, msgsReceived>>
 
 \* A function which gives the proposer for a given round at a given height.
 \* Here we use round robin. As Procs and Faulty are assigned non-deterministically,
@@ -62,7 +61,6 @@ Init ==
     /\ msgsPrecommit = [rd \in Rounds |-> {}]
     /\ msgsPropose = [rd \in Rounds |-> {}]
     /\ msgsReceived = [p \in Procs |-> {}]
-    /\ oldEvents = {}
     
 FaultyMessages == \* the messages that can be sent by the faulty processes
     ([type: {"PROPOSAL"}, src: Faulty,
@@ -87,7 +85,7 @@ UponProposalInPropose(p) ==
                             msgsPrevote[round[p]] \cup newMsg] 
       /\ step' = [step EXCEPT ![p] = "PREVOTE"]
       /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue,
-                     validRound, msgsPropose, msgsPrecommit, msgsReceived,oldEvents>>
+                     validRound, msgsPropose, msgsPrecommit, msgsReceived>>
                     
 
 \* lines 28-33        
@@ -106,7 +104,7 @@ UponProposalInProposeAndPrevote(p) ==
                             msgsPrevote[round[p]] \cup newMsg] 
       /\ step' = [step EXCEPT ![p] = "PREVOTE"]
       /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue,
-                     validRound, msgsPropose, msgsPrecommit, msgsReceived, oldEvents>>
+                     validRound, msgsPropose, msgsPrecommit, msgsReceived>>
                      
 \* TODO: Multiple proposal messages will potentially be generated from this rule. We should probably constrain sending multiple propose msgs!
 InsertProposal(p) == 
@@ -121,7 +119,7 @@ InsertProposal(p) ==
      msgsPropose' = [msgsPropose EXCEPT ![round[p]] =
                             msgsPropose[round[p]] \cup newMsg]  
      /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue, step,
-                     validRound, msgsPrevote, msgsPrecommit, msgsReceived, oldEvents>>  
+                     validRound, msgsPrevote, msgsPrecommit, msgsReceived>>  
                      
                      
  \* lines 34-35        
@@ -133,7 +131,7 @@ UponQuorumOfPrevotesAny(p) ==
                             msgsPrecommit[round[p]] \cup {newMsg}] 
       /\ step' = [step EXCEPT ![p] = "PRECOMMIT"]
       /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue,
-                     validRound, msgsPropose, msgsPrevote, msgsReceived, oldEvents>>
+                     validRound, msgsPropose, msgsPrevote, msgsReceived>>
                      
                      
 \* lines 36-46
@@ -162,7 +160,7 @@ UponProposalInPrevoteOrCommitAndPrevote(p) ==
       /\ step' = IF step[p] = "PREVOTE" THEN [step EXCEPT ![p] = "PRECOMMIT"] ELSE step \* line 41
       /\ validValue' = [validValue EXCEPT ![p] = v] \* line 42
       /\ validRound' = [validRound EXCEPT ![p] = round[p]] \* line 43
-      /\ UNCHANGED <<round, decision, msgsPropose, msgsPrevote, msgsReceived, oldEvents>>
+      /\ UNCHANGED <<round, decision, msgsPropose, msgsPrevote, msgsReceived>>
       
       
 \* lines 11-21
@@ -177,7 +175,7 @@ UponQuorumOfPrecommitsAny(p) ==
       /\ round[p] + 1 \in Rounds
       /\ StartRound(p, round[p] + 1)   
       /\ UNCHANGED <<decision, lockedValue, lockedRound, validValue,
-                     validRound, msgsPropose, msgsPrevote, msgsPrecommit, msgsReceived, oldEvents>> 
+                     validRound, msgsPropose, msgsPrevote, msgsPrecommit, msgsReceived>> 
                      
                      
 \* lines 49-54        
@@ -190,7 +188,7 @@ UponProposalInPrecommitNoDecision(p) ==
          Cardinality(PV) >= THRESHOLD2 \* line 49
       /\ decision' = [decision EXCEPT ![p] = v] \* update the decision, line 51
       /\ UNCHANGED <<round, step, lockedValue, lockedRound, validValue,
-                     validRound, msgsPropose, msgsPrevote, msgsPrecommit, msgsReceived, oldEvents>>                      
+                     validRound, msgsPropose, msgsPrevote, msgsPrecommit, msgsReceived>>                      
                      
                                                           
                                               
@@ -199,20 +197,20 @@ InsertFaultyPrevoteMessage ==
     \E msg \in FaultyMessages: msg.type = "PREVOTE" 
     /\ msgsPrevote' = [msgsPrevote EXCEPT ![msg.round] = msgsPrevote[msg.round] \cup {msg}]
     /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue, step,
-                     validRound, msgsPropose, msgsPrecommit, msgsReceived, oldEvents>>  
+                     validRound, msgsPropose, msgsPrecommit, msgsReceived>>  
                      
 InsertFaultyPrecommitMessage == 
     \E msg \in FaultyMessages: msg.type = "PRECOMMIT" 
     /\ msgsPrecommit' = [msgsPrecommit EXCEPT ![msg.round] = msgsPrecommit[msg.round] \cup {msg}]
     /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue, step,
-                     validRound, msgsPropose, msgsPrevote, msgsReceived, oldEvents>>        
+                     validRound, msgsPropose, msgsPrevote, msgsReceived>>        
                      
 InsertFaultyProposalMessage == 
     \E srcA \in Faulty, r \in Rounds, idV \in Values:
         LET newMsg == [type |-> "PROPOSAL", src |-> srcA, round |-> r, id |-> idV] IN
          msgsPropose' = [msgsPropose EXCEPT ![r] = msgsPropose[r] \cup {newMsg}] 
         /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue, step,
-                     validRound, msgsPrecommit, msgsPrevote, msgsReceived, oldEvents>>                                            
+                     validRound, msgsPrecommit, msgsPrevote, msgsReceived>>                                            
                      
 
 Next ==
