@@ -34,6 +34,10 @@ VARIABLES
   inEvent,
   outEvent
 
+\* the variables of the environment
+VARIABLES
+  envState
+
 States == { "init", "running", "stopped" }
 
 NoEvent == [type |-> "None"]
@@ -97,14 +101,41 @@ NextSM ==
     \/ UNCHANGED <<state, height, peerIds, peerHeights, outEvent>>
 
 \* the spec of the environment
+(*
+  The environment is modelling the input events to the node.
+  It does so by reacting to the output events from the state machine.
+  
+  The correct peers should increase their heights, as in the blockchain.
+  The faulty peers can do whatever they like.
+  
+  TODO: how do we model timeouts?
+  
+  Unresponsiveness, reordering of messages, incorrect messages (faulty blocks, arbitrary heights).
+  Downloading two consequtive blocks to do verification (h and h+1 may come from different peers).
+  
+  Termination properties are more important than safety.
+ *)
 InitEnv ==
-    \E h \in Heights:
+    /\ envState = "init"
+    /\ \E h \in Heights:
         inEvent = [type |-> "start", height |-> h]
 
 InitChaos == inEvent \in InEvents
 
+OnStatusRequest ==
+    /\ outEvent.type = "statusRequest"
+    /\ inEvent' \in [type: {"statusResponse"}, peerId: AllPeerIds, height: Heights]
+    /\ UNCHANGED <<envState>>
+(*
+    /\ outEvent.type = "statusRequest"
+    /\ envState' = "statusRequested"
+*)
+
 NextEnv ==
-    inEvent' \in InEvents
+    \/ OnStatusRequest
+    \/  /\ outEvent.type /= "statusRequest"
+        /\ inEvent' \in InEvents
+        /\ UNCHANGED <<envState>>
 
 \* the composition of the node and the environment
 Init == InitSM /\ InitEnv
@@ -119,9 +150,14 @@ TypeOK ==
     /\ peerIds \subseteq AllPeerIds
     /\ peerHeights \in [AllPeerIds -> Heights \cup {NilHeight}]
 
+\* temporal assumptions about the environment
+HonestEnv ==
+    []((outEvent.type = "statusRequest")
+        => \/ <>(inEvent.type = "statusResponse")
+           \/ <>(inEvent.type = "statusResponseTimeout"))
 
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Dec 18 15:59:00 CET 2019 by igor
+\* Last modified Thu Dec 19 14:58:23 CET 2019 by igor
 \* Created Wed Dec 18 14:08:53 CET 2019 by igor
