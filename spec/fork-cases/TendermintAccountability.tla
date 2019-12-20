@@ -13,7 +13,7 @@ T == 1 \* an upper bound on the number of Byzantine processes
 F == 2 \* the number of Byzantine processes
 Procs == 1..N-F
 Faulty == N-F+1..N
-Rounds == 0..4  \* the set of possible rounds, give a bit more freedom to the solver
+Rounds == 0..2  \* the set of possible rounds, give a bit more freedom to the solver
 ValidValues == {0, 1}     \* e.g., picked by a correct process, or a faulty one
 InvalidValues == {2}    \* e.g., sent by a Byzantine process
 Values == ValidValues \cup InvalidValues \* all values
