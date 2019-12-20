@@ -14,9 +14,9 @@ CONSTANTS
 N == 4 \* the total number of processes: correct and faulty
 T == 1 \* an upper bound on the number of Byzantine processes
 F == 2 \* the number of Byzantine processes
-Procs == 1..N-F
+Corr == 1..N-F
 Faulty == N-F+1..N
-AllProcs == 1..N
+AllCorr == 1..N
 Rounds == 0..2  \* the set of possible rounds, give a bit more freedom to the solver
 ValidValues == {"0", "1"}     \* e.g., picked by a correct process, or a faulty one
 InvalidValues == {"2"}    \* e.g., sent by a Byzantine process
@@ -41,7 +41,7 @@ EmptyMsgSet == SetOfMsgs({})
 ConstInit ==
     \*StartId \in 1..N
     \* the proposer is arbitrary -- ok for safety 
-    PropFun \in [Rounds -> AllProcs]
+    PropFun \in [Rounds -> AllCorr]
 
 (* END-OF-APALACHE *)
 
@@ -53,7 +53,7 @@ VARIABLES round, step, decision, lockedValue, lockedRound, validValue, validRoun
 VARIABLES msgsPropose, \* the propose messages broadcasted in the system, a function Heights \X Rounds -> set of messages
           msgsPrevote, \* the prevote messages broadcasted in the system, a function Heights \X Rounds -> set of messages  
           msgsPrecommit, \* the precommit messages broadcasted in the system, a function Heights \X Rounds -> set of messages  
-          msgsReceived  \* set of received messages a process acted on (that triggered some rule), a function p \in Procs -> set of messages  
+          msgsReceived  \* set of received messages a process acted on (that triggered some rule), a function p \in Corr -> set of messages  
  
  
 \* this is needed for UNCHANGED
@@ -61,7 +61,7 @@ vars == <<round, step, decision, lockedValue, lockedRound, validValue,
           validRound, msgsPropose, msgsPrevote, msgsPrecommit, msgsReceived>>
 
 \* A function which gives the proposer for a given round at a given height.
-\* Here we use round robin. As Procs and Faulty are assigned non-deterministically,
+\* Here we use round robin. As Corr and Faulty are assigned non-deterministically,
 \* it does not really matter who starts first.
 \*Proposer(rd) == 1 + ((StartId + rd) % N)
 Proposer(rd) == PropFun[rd]
@@ -73,17 +73,17 @@ IsValid(v) == v \in ValidValues
 
 \* here we start with StartRound(0)
 Init ==
-    /\ round = [p \in Procs |-> 0]
-    /\ step = [p \in Procs |-> "PROPOSE"]    \* Q: where we define set of possible steps process can be in?
-    /\ decision = [p \in Procs |-> NilValue]
-    /\ lockedValue = [p \in Procs |-> NilValue]
-    /\ lockedRound = [p \in Procs |-> NilRound]
-    /\ validValue = [p \in Procs |-> NilValue]
-    /\ validRound = [p \in Procs |-> NilRound]
+    /\ round = [p \in Corr |-> 0]
+    /\ step = [p \in Corr |-> "PROPOSE"]    \* Q: where we define set of possible steps process can be in?
+    /\ decision = [p \in Corr |-> NilValue]
+    /\ lockedValue = [p \in Corr |-> NilValue]
+    /\ lockedRound = [p \in Corr |-> NilRound]
+    /\ validValue = [p \in Corr |-> NilValue]
+    /\ validRound = [p \in Corr |-> NilRound]
     /\ msgsPrevote = [rd \in Rounds |-> EmptyMsgSet]
     /\ msgsPrecommit = [rd \in Rounds |-> EmptyMsgSet]
     /\ msgsPropose = [rd \in Rounds |-> EmptyMsgSet]
-    /\ msgsReceived = [p \in Procs |-> EmptyMsgSet]
+    /\ msgsReceived = [p \in Corr |-> EmptyMsgSet]
     
 FaultyMessages == \* the messages that can be sent by the faulty processes
     (SetOfMsgs([type: {"PROPOSAL"}, src: Faulty,
@@ -145,7 +145,7 @@ InsertProposal(p) ==
                      validRound, msgsPrevote, msgsPrecommit, msgsReceived>>  
                      
                      
- \* lines 34-35        
+ \* lines 34-35 + lines 61-64
 UponQuorumOfPrevotesAny(p) ==
       /\ step[p] = "PREVOTE" \* line 34 and 61
       /\ Cardinality(msgsPrevote[round[p]]) >= THRESHOLD2 \* line 34 TODO: Note that multiple messages from the same (faulty) process will trigger this rule!  
@@ -239,14 +239,13 @@ InsertFaultyProposalMessage ==
          msgsPropose' = [msgsPropose EXCEPT ![r] = msgsPropose[r] \cup {newMsg}] 
         /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue, step,
                      validRound, msgsPrecommit, msgsPrevote, msgsReceived>>                                            
-                     
-
 Next ==
-    \/ \E p \in Procs:
+    \/ \E p \in Corr:
         \/ UponProposalInPropose(p)
         \/ UponProposalInProposeAndPrevote(p)
         \/ InsertProposal(p)
         \/ UponQuorumOfPrevotesAny(p)
+        \/ UponProposalInPrevoteOrCommitAndPrevote(p)
         \/ UponQuorumOfPrecommitsAny(p)
         \/ InsertFaultyPrevoteMessage
         \/ InsertFaultyPrecommitMessage
@@ -257,13 +256,23 @@ Next ==
     \*\/ UNCHANGED vars
                     
 \* simple reachability properties to make sure that the algorithm is doing anything useful
-NoPrevote == \A p \in Procs: step[p] /= "PREVOTE" 
+NoPrevote == \A p \in Corr: step[p] /= "PREVOTE" 
 
-NoPrecommit == \A p \in Procs: step[p] /= "PRECOMMIT"   
+NoPrecommit == \A p \in Corr: step[p] /= "PRECOMMIT"   
 
-NoHigherRounds == \A p \in Procs: round[p] < 1
+NoValidPrecommit ==
+    \A r \in Rounds:
+      \A m \in msgsPrecommit[r]:
+        m.id = NilValue \/ m.src \in Faulty
 
-NoDecision == \A p \in Procs: decision[p] = NilValue                    
+NoHigherRounds == \A p \in Corr: round[p] < 1
+
+NoDecision == \A p \in Corr: decision[p] = NilValue                    
+
+Agreement == \A p, q \in Corr:
+    \/ decision[p] = NilValue
+    \/ decision[q] = NilValue
+    \/ decision[p] = decision[q]
  
     
 =============================================================================    
