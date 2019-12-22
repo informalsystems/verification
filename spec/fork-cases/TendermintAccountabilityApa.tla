@@ -130,17 +130,21 @@ UponProposalInProposeAndPrevote(p) ==
                      validRound, msgsPropose, msgsPrecommit, msgsReceived>>
                      
 InsertProposal(p) == 
-    /\ p = Proposer(round[p]) /\ step[p] = "PROPOSE"
+  LET r == round[p] IN
+    /\ p = Proposer(round[p])
+    /\ step[p] = "PROPOSE"
+    \* if the proposer is sending a proposal, then there are no other proposals
+    \* by the correct processes for the same round
+    /\ \A m \in msgsPropose[r]: m.src \in Faulty
     /\ \E v \in ValidValues: 
-        \* TODO: shall the faulty processes send InvalidValues too?
         LET proposal == IF validValue[p] /= NilValue THEN validValue[p] ELSE v IN
         LET newMsg ==
-            AsMsg([type |-> "PROPOSAL", src |-> p, round |-> round[p],
+            AsMsg([type |-> "PROPOSAL", src |-> p, round |-> r,
                 proposal |-> proposal, validRound |-> validRound[p]])
         IN
-        LET r == round[p] IN
+
         \* a correct proposer never sends two proposals
-        /\ p \in Corr => msgsPropose[r] = EmptyMsgSet
+
         /\ msgsPropose' = [msgsPropose EXCEPT ![r] =
                                 msgsPropose[r] \cup {newMsg}]  
         /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue, step,
@@ -221,7 +225,6 @@ InsertFaultyPrevoteMessage ==
         \E id \in Values:
           LET msg == AsMsg([type |-> "PREVOTE", src |-> src, round |-> r, id |-> id])
           IN
-          \*/\ msg \notin msgsPrevote[r] \* optimization
           /\ msgsPrevote' = [msgsPrevote EXCEPT ![r] = msgsPrevote[r] \cup {msg}]
           /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue, step,
                      validRound, msgsPropose, msgsPrecommit, msgsReceived>>  
@@ -232,7 +235,6 @@ InsertFaultyPrecommitMessage ==
         \E id \in Values:
           LET msg == AsMsg([type |-> "PRECOMMIT", src |-> src, round |-> r, id |-> id])
           IN
-          \*/\ msg \notin msgsPrecommit[r] \* optimization
           /\ msgsPrecommit' = [msgsPrecommit EXCEPT ![r] = msgsPrecommit[r] \cup {msg}]
           /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue, step,
                      validRound, msgsPropose, msgsPrevote, msgsReceived>>        
@@ -240,11 +242,13 @@ InsertFaultyPrecommitMessage ==
 InsertFaultyProposalMessage == 
     \E srcA \in Faulty, r \in Rounds, idV \in Values:
         LET newMsg == AsMsg([type |-> "PROPOSAL", src |-> srcA, round |-> r, id |-> idV]) IN
-        \*/\ newMsg \notin msgsPropose[r] \* optimization
         /\ msgsPropose' = [msgsPropose EXCEPT ![r] = msgsPropose[r] \cup {newMsg}] 
         /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue, step,
                      validRound, msgsPrecommit, msgsPrevote, msgsReceived>>                                            
 Next ==
+    \/ InsertFaultyPrevoteMessage
+    \/ InsertFaultyPrecommitMessage
+    \/ InsertFaultyProposalMessage
     \/ \E p \in Corr:
         \/ UponProposalInPropose(p)
         \/ UponProposalInProposeAndPrevote(p)
@@ -252,10 +256,7 @@ Next ==
         \/ UponQuorumOfPrevotesAny(p)
         \/ UponProposalInPrevoteOrCommitAndPrevote(p)
         \/ UponQuorumOfPrecommitsAny(p)
-        \/ InsertFaultyPrevoteMessage
-        \/ InsertFaultyPrecommitMessage
         \/ UponProposalInPrecommitNoDecision(p)
-        \/ InsertFaultyProposalMessage
         
     \* a safeguard to prevent deadlocks when the algorithm goes to further heights or rounds
     \*\/ UNCHANGED vars
