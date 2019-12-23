@@ -14,6 +14,7 @@ CONSTANTS
 N == 4 \* the total number of processes: correct and faulty
 T == 1 \* an upper bound on the number of Byzantine processes
 F == 2 \* the number of Byzantine processes
+NFaultyMessages == 8 \* the number of injected faulty messages
 Corr == 1..N-F
 Faulty == N-F+1..N
 AllCorr == 1..N
@@ -55,6 +56,7 @@ VARIABLES msgsPropose, \* the propose messages broadcasted in the system, a func
           msgsPrecommit, \* the precommit messages broadcasted in the system, a function Heights \X Rounds -> set of messages  
           msgsReceived  \* set of received messages a process acted on (that triggered some rule), a function p \in Corr -> set of messages  
  
+VARIABLES nfaultsInjected \* the number of faulty messages injected in the system
  
 \* this is needed for UNCHANGED
 vars == <<round, step, decision, lockedValue, lockedRound, validValue,
@@ -84,6 +86,7 @@ Init ==
     /\ msgsPrecommit = [rd \in Rounds |-> EmptyMsgSet]
     /\ msgsPropose = [rd \in Rounds |-> EmptyMsgSet]
     /\ msgsReceived = [p \in Corr |-> EmptyMsgSet]
+    /\ nfaultsInjected = 0
     
 FaultyMessages == \* the messages that can be sent by the faulty processes
     (SetOfMsgs([type: {"PROPOSAL"}, src: Faulty,
@@ -246,17 +249,21 @@ InsertFaultyProposalMessage ==
         /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue, step,
                      validRound, msgsPrecommit, msgsPrevote, msgsReceived>>                                            
 Next ==
-    \/ InsertFaultyPrevoteMessage
-    \/ InsertFaultyPrecommitMessage
-    \/ InsertFaultyProposalMessage
-    \/ \E p \in Corr:
-        \/ UponProposalInPropose(p)
-        \/ UponProposalInProposeAndPrevote(p)
-        \/ InsertProposal(p)
-        \/ UponQuorumOfPrevotesAny(p)
-        \/ UponProposalInPrevoteOrCommitAndPrevote(p)
-        \/ UponQuorumOfPrecommitsAny(p)
-        \/ UponProposalInPrecommitNoDecision(p)
+    IF nfaultsInjected < NFaultyMessages
+    THEN  /\ nfaultsInjected' = nfaultsInjected + 1
+          /\ \/ InsertFaultyPrevoteMessage
+             \/ InsertFaultyPrecommitMessage
+             \/ InsertFaultyProposalMessage
+    ELSE
+      /\ UNCHANGED nfaultsInjected  
+      /\ \E p \in Corr:
+           \/ UponProposalInPropose(p)
+           \/ UponProposalInProposeAndPrevote(p)
+           \/ InsertProposal(p)
+           \/ UponQuorumOfPrevotesAny(p)
+           \/ UponProposalInPrevoteOrCommitAndPrevote(p)
+           \/ UponQuorumOfPrecommitsAny(p)
+           \/ UponProposalInPrecommitNoDecision(p)
         
     \* a safeguard to prevent deadlocks when the algorithm goes to further heights or rounds
     \*\/ UNCHANGED vars
