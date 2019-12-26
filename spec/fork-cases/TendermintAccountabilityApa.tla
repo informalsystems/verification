@@ -243,11 +243,13 @@ InsertFaultyPrecommitMessage ==
                      validRound, msgsPropose, msgsPrevote, msgsReceived>>        
                      
 InsertFaultyProposalMessage == 
-    \E srcA \in Faulty, r \in Rounds, idV \in Values:
-        LET newMsg == AsMsg([type |-> "PROPOSAL", src |-> srcA, round |-> r, id |-> idV]) IN
+    \E srcA \in Faulty, r \in Rounds, vr \in Rounds \cup {NilRound}, idV \in Values:
+        LET newMsg == AsMsg([type |-> "PROPOSAL",
+            src |-> srcA, proposal |-> idV, round |-> r, validRound |-> vr]) IN
         /\ msgsPropose' = [msgsPropose EXCEPT ![r] = msgsPropose[r] \cup {newMsg}] 
         /\ UNCHANGED <<round, decision, lockedValue, lockedRound, validValue, step,
-                     validRound, msgsPrecommit, msgsPrevote, msgsReceived>>                                            
+                     validRound, msgsPrecommit, msgsPrevote, msgsReceived>>
+
 Next ==
     IF nfaultsInjected < NFaultyMessages
     THEN  /\ nfaultsInjected' = nfaultsInjected + 1
