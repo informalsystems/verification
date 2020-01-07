@@ -14,7 +14,9 @@ CONSTANTS
 N == 4 \* the total number of processes: correct and faulty
 T == 1 \* an upper bound on the number of Byzantine processes
 F == 2 \* the number of Byzantine processes
-NFaultyMessages == 8 \* the number of injected faulty messages
+NFaultyProposals == 8   \* the number of injected faulty PROPOSE messages
+NFaultyPrevotes == 8    \* the number of injected faulty PREVOTE messages
+NFaultyPrecommits == 8  \* the number of injected faulty PRECOMMIT messages
 Corr == 1..N-F
 Faulty == N-F+1..N
 AllProcs == 1..N
@@ -95,11 +97,16 @@ Init ==
     /\ lockedRound = [p \in Corr |-> NilRound]
     /\ validValue = [p \in Corr |-> NilValue]
     /\ validRound = [p \in Corr |-> NilRound]
-    /\ ProduceFaults(msgsPrevote', SetOfMsgs([type: {"PREVOTE"}, src: Faulty, round: Rounds, id: Values]), 8)
-    /\ ProduceFaults(msgsPrecommit', SetOfMsgs([type: {"PRECOMMIT"}, src: Faulty, round: Rounds, id: Values]), 8)
+    /\ ProduceFaults(msgsPrevote',
+                     SetOfMsgs([type: {"PREVOTE"}, src: Faulty, round: Rounds, id: Values]),
+                     NFaultyPrevotes)
+    /\ ProduceFaults(msgsPrecommit',
+                     SetOfMsgs([type: {"PRECOMMIT"}, src: Faulty, round: Rounds, id: Values]),
+                     NFaultyPrecommits)
     /\ ProduceFaults(msgsPropose',
-        SetOfMsgs([type: {"PROPOSAL"}, src: Faulty, round: Rounds,
-                   proposal: Values, validRound: Rounds \cup {NilRound}]), 0)
+                     SetOfMsgs([type: {"PROPOSAL"}, src: Faulty, round: Rounds,
+                                proposal: Values, validRound: Rounds \cup {NilRound}]),
+                     NFaultyProposals)
     /\ evidence = EmptyMsgSet
 
 InitNoEquivocation ==
