@@ -36,7 +36,8 @@ VARIABLES
 
 \* the variables of the environment
 VARIABLES
-  envState
+  envState,
+  turn \* who is taking the turn: "Environment" or "SM" 
 
 States == { "init", "running", "stopped" }
 
@@ -98,7 +99,7 @@ OnStatusResponse ==
 NextSM ==
     \/ OnStart
     \/ OnStatusResponse
-    \/ UNCHANGED <<state, height, peerIds, peerHeights, outEvent>>
+    \/ state = "finished" /\ UNCHANGED <<state, height, peerIds, peerHeights, outEvent>>
 
 \* the spec of the environment
 (*
@@ -126,10 +127,7 @@ OnStatusRequest ==
     /\ outEvent.type = "statusRequest"
     /\ inEvent' \in [type: {"statusResponse"}, peerId: AllPeerIds, height: Heights]
     /\ UNCHANGED <<envState>>
-(*
-    /\ outEvent.type = "statusRequest"
-    /\ envState' = "statusRequested"
-*)
+    \*/\ envState' = "statusRequested"
 
 NextEnv ==
     \/ OnStatusRequest
@@ -138,9 +136,22 @@ NextEnv ==
         /\ UNCHANGED <<envState>>
 
 \* the composition of the node and the environment
-Init == InitSM /\ InitEnv
+Init ==
+    /\ turn = "Environment"
+    /\ InitSM
+    /\ InitEnv
 
-Next == NextSM /\ NextEnv
+Next ==
+    IF turn = "Environment"
+    THEN
+        /\ NextEnv
+        /\ turn' = "SM"
+        /\ UNCHANGED <<state, height, peerIds, peerHeights, outEvent>>
+    ELSE
+        /\ NextSM
+        /\ turn' = "Environment"
+        /\ inEvent' = NoEvent
+        /\ UNCHANGED <<envState>>
 
 \* properties to check
 TypeOK ==
@@ -149,6 +160,44 @@ TypeOK ==
     /\ height \in Heights \cup {NilHeight}
     /\ peerIds \subseteq AllPeerIds
     /\ peerHeights \in [AllPeerIds -> Heights \cup {NilHeight}]
+
+\* A property to check:    
+\* if a peer is lowering its height, it will be removed forever
+
+(*
+ if at some point, peerHeights[p] = h1 for some h1,
+     and later peerHeights[p] = h2,
+     and h1 > h2, then p \in peerIds from that point on.
+ *)
+LoweringPeerRemoved ==
+    \A p \in AllPeerIds:
+    <>(\E h1 \in Heights:
+        /\ peerHeights[p] = h1
+        /\ <>(inEvent.type = "statusResponse"
+                /\ inEvent.peerId = p /\ inEvent.height < h1)
+            => <>[](p \notin peerIds)
+       )
+
+\* 1. Environment: inEvent
+\* ...
+\* ...
+\* ...
+\* 2. SM processes inEvent
+\* 3. p \notin peerIds
+
+vars == <<state, height, peerIds, peerHeights, inEvent, outEvent, envState>>
+
+\* for every peer p, it is always true that if the status response
+\* has a height less than the registered height of p,
+\* then from some point on, p is removed from the set of peers 
+LoweringPeerRemoved2 ==
+    \A p \in AllPeerIds:
+    []((turn = "SM"
+            /\ inEvent.type = "statusResponse"
+            /\ inEvent.peerId = p
+            /\ inEvent.height < peerHeights[p])
+        => <>[](p \notin peerIds))
+        \* => [][p \notin peerIds']_vars)
 
 \* temporal assumptions about the environment
 HonestEnv ==
@@ -159,5 +208,5 @@ HonestEnv ==
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Dec 19 14:58:23 CET 2019 by igor
+\* Last modified Wed Jan 08 15:16:03 CET 2020 by igor
 \* Created Wed Dec 18 14:08:53 CET 2019 by igor
