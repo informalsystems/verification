@@ -14,13 +14,13 @@ CONSTANTS
 N == 4 \* the total number of processes: correct and faulty
 T == 1 \* an upper bound on the number of Byzantine processes
 F == 2 \* the number of Byzantine processes
-NFaultyProposals == 8   \* the number of injected faulty PROPOSE messages
-NFaultyPrevotes == 8    \* the number of injected faulty PREVOTE messages
-NFaultyPrecommits == 8  \* the number of injected faulty PRECOMMIT messages
+NFaultyProposals == 0   \* the number of injected faulty PROPOSE messages
+NFaultyPrevotes == 4    \* the number of injected faulty PREVOTE messages
+NFaultyPrecommits == 4  \* the number of injected faulty PRECOMMIT messages
 Corr == 1..N-F
 Faulty == N-F+1..N
 AllProcs == 1..N
-Rounds == 0..2  \* the set of possible rounds, give a bit more freedom to the solver
+Rounds == 0..3  \* the set of possible rounds, give a bit more freedom to the solver
 ValidValues == {"0", "1"}     \* e.g., picked by a correct process, or a faulty one
 InvalidValues == {"2"}    \* e.g., sent by a Byzantine process
 Values == ValidValues \cup InvalidValues \* all values
@@ -79,15 +79,6 @@ ProduceFaults(msgFun, From, k) ==
     \E f \in [1..k -> From]:
         msgFun = [r \in Rounds |-> {m \in {f[i]: i \in 1..k}: m.round = r}]
 
-NoEquivocation ==
-    \A r \in Rounds:
-        /\ \A m1, m2 \in msgsPropose[r]:
-            m1 /= m2 => m1.src /= m2.src
-        /\ \A m1, m2 \in msgsPrevote[r]:
-            m1 /= m2 => m1.src /= m2.src
-        /\ \A m1, m2 \in msgsPrecommit[r]:
-            m1 /= m2 => m1.src /= m2.src
-
 \* here we start with StartRound(0)
 Init ==
     /\ round = [p \in Corr |-> 0]
@@ -108,9 +99,6 @@ Init ==
                                 proposal: Values, validRound: Rounds \cup {NilRound}]),
                      NFaultyProposals)
     /\ evidence = EmptyMsgSet
-
-InitNoEquivocation ==
-    Init /\ NoEquivocation
     
 FaultyMessages == \* the messages that can be sent by the faulty processes
     (SetOfMsgs([type: {"PROPOSAL"}, src: Faulty,
@@ -226,6 +214,7 @@ UponProposalInPrevoteOrCommitAndPrevote(p) ==
       
 \* lines 11-21
 StartRound(p, r) ==
+   /\ step[p] /= "DECIDED" \* when decided, do not switch the round
    /\ round' = [round EXCEPT ![p] = r]
    /\ step' = [step EXCEPT ![p] = "PROPOSE"] 
 
@@ -268,7 +257,36 @@ Next ==
         
     \* a safeguard to prevent deadlocks when the algorithm goes to further heights or rounds
     \*\/ UNCHANGED vars
-                    
+
+(******************************** FORK ACCOUNTABILITY  ***************************************)
+NoEquivocation ==
+    \A r \in Rounds:
+        /\ \A m1, m2 \in msgsPropose[r]:
+            m1 /= m2 => m1.src /= m2.src
+        /\ \A m1, m2 \in msgsPrevote[r]:
+            m1 /= m2 => m1.src /= m2.src
+        /\ \A m1, m2 \in msgsPrecommit[r]:
+            m1 /= m2 => m1.src /= m2.src
+
+InitNoEquivocation ==
+    Init /\ NoEquivocation
+
+\* amneasic behavior by process p
+Amnesia(p) ==
+    \E r1, r2 \in Rounds:
+      /\ r1 < r2
+      /\ \E v1, v2 \in ValidValues:
+        /\ v1 /= v2
+        /\ AsMsg([type |-> "PRECOMMIT", src |-> p, round |-> r1, id |-> Id(v1)]) \in msgsPrecommit[r1]    
+        /\ AsMsg([type |-> "PREVOTE", src |-> p, round |-> r2, id |-> Id(v2)]) \in msgsPrecommit[r2]
+        /\ \A r \in { rnd \in Rounds: r1 <= rnd /\ rnd <= r2 }:
+            LET prevotes ==
+                { m \in msgsPrevote[r]:
+                  m.type = "PREVOTE" /\ m.round = r /\ m.id = Id(v2) }
+            IN
+            Cardinality(prevotes) < THRESHOLD2
+
+(******************************** PROPERTIES  ***************************************)
 \* simple reachability properties to make sure that the algorithm is doing anything useful
 NoPrevote == \A p \in Corr: step[p] /= "PREVOTE" 
 
@@ -288,6 +306,11 @@ Agreement == \A p, q \in Corr:
     \/ decision[q] = NilValue
     \/ decision[p] = decision[q]
  
+AgreementAndAmnesia ==
+    Agreement \/ (\E p \in Faulty: Amnesia(p))
+ 
+AgreementNoAmnesia ==
+    Agreement \/ ~(\E p \in Faulty: Amnesia(p))
     
 =============================================================================    
     
