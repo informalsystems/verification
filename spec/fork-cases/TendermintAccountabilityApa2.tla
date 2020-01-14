@@ -15,12 +15,12 @@ N == 4 \* the total number of processes: correct and faulty
 T == 1 \* an upper bound on the number of Byzantine processes
 F == 2 \* the number of Byzantine processes
 NFaultyProposals == 0   \* the number of injected faulty PROPOSE messages
-NFaultyPrevotes == 4    \* the number of injected faulty PREVOTE messages
-NFaultyPrecommits == 4  \* the number of injected faulty PRECOMMIT messages
+NFaultyPrevotes == 6    \* the number of injected faulty PREVOTE messages
+NFaultyPrecommits == 6  \* the number of injected faulty PRECOMMIT messages
 Corr == 1..N-F
 Faulty == N-F+1..N
 AllProcs == 1..N
-Rounds == 0..3  \* the set of possible rounds, give a bit more freedom to the solver
+Rounds == 0..2  \* the set of possible rounds, give a bit more freedom to the solver
 ValidValues == {"0", "1"}     \* e.g., picked by a correct process, or a faulty one
 InvalidValues == {"2"}    \* e.g., sent by a Byzantine process
 Values == ValidValues \cup InvalidValues \* all values
