@@ -1,7 +1,7 @@
 ----------------------------- MODULE TendermintAccountabilityApa2 -----------------------------
 (*
  A TLA+ specification of subset of Tendermint consensus needed to formalize fork accountability 
- protocol.
+ protocol. In this version, the faults are injected right in the initial states.
  
  This is the version for compatibility with Apalache.
  *)
@@ -42,7 +42,6 @@ SetOfMsgs(S) == S <: {MT}
 EmptyMsgSet == SetOfMsgs({})
 
 ConstInit ==
-    \*StartId \in 1..N
     \* the proposer is arbitrary -- ok for safety 
     PropFun \in [Rounds -> AllProcs]
 
@@ -171,7 +170,8 @@ InsertProposal(p) ==
  \* lines 34-35 + lines 61-64
 UponQuorumOfPrevotesAny(p) ==
       /\ step[p] = "PREVOTE" \* line 34 and 61
-      /\ Cardinality(msgsPrevote[round[p]]) >= THRESHOLD2 \* line 34 TODO: Note that multiple messages from the same (faulty) process will trigger this rule!  
+      /\ Cardinality(msgsPrevote[round[p]]) >= THRESHOLD2 \* line 34
+         \* TODO: Note that multiple messages from the same (faulty) process may trigger this rule!  
       /\ evidence' = msgsPrevote[round[p]]
       /\ LET newMsg == AsMsg([type |-> "PRECOMMIT", src |-> p, round |-> round[p], id |-> NilValue]) IN
           msgsPrecommit' = [msgsPrecommit EXCEPT ![round[p]] =
@@ -230,6 +230,7 @@ UponQuorumOfPrecommitsAny(p) ==
 \* lines 49-54        
 UponProposalInPrecommitNoDecision(p) ==
     /\ decision[p] = NilValue \* line 49
+    \* TODO: a catch-up is going on here, not exactly Algorithm 1
     /\ \E v \in ValidValues (* line 50*) , r \in Rounds, vr \in Rounds \cup {NilRound}:
       /\ LET msg == AsMsg([type |-> "PROPOSAL", src |-> Proposer(r), 
                            round |-> r, proposal |-> v, validRound |-> vr]) IN
@@ -258,6 +259,251 @@ Next ==
     \* a safeguard to prevent deadlocks when the algorithm goes to further heights or rounds
     \*\/ UNCHANGED vars
 
+(******************************** INVARIANTS *************************************************)
+(* first, we define the sets of all potential messages *)
+AllProposals == 
+  [type: {"PROPOSAL"},
+   src: AllProcs,
+   round: Rounds,
+   proposal: Values \cup {NilValue},
+   validRound: Rounds \cup {NilRound}] <: {MT}
+  
+AllPrevotes ==
+  [type: {"PREVOTE"},
+   src: AllProcs,
+   round: Rounds,
+   id: Values \cup {NilValue}] <: {MT}
+
+AllPrecommits ==
+  [type: {"PRECOMMIT"},
+   src: AllProcs,
+   round: Rounds,
+   id: Values \cup {NilValue}] <: {MT}
+   
+BenignRoundsInMessages(msgfun) ==
+  \* the message function never contains a message for a wrong round
+  \A r \in Rounds:
+    \A m \in msgfun[r]:
+      r = m.round
+
+(* the standard type invariant -- importantly, it is inductive *)
+TypeOK ==
+    /\ round \in [Corr -> Rounds]
+    /\ step \in [Corr -> { "PROPOSE", "PREVOTE", "PRECOMMIT", "DECIDED" }]
+    /\ decision \in [Corr -> ValidValues \cup {NilValue}]
+    /\ lockedValue \in [Corr -> ValidValues \cup {NilValue}]
+    /\ lockedRound \in [Corr -> Rounds \cup {NilRound}]
+    /\ validValue \in [Corr -> ValidValues \cup {NilValue}]
+    /\ validRound \in [Corr -> Rounds \cup {NilRound}]
+    /\ msgsPropose \in [Rounds -> SUBSET AllProposals]
+    /\ BenignRoundsInMessages(msgsPropose)
+    /\ msgsPrevote \in [Rounds -> SUBSET AllPrevotes]
+    /\ BenignRoundsInMessages(msgsPrevote)
+    /\ msgsPrecommit \in [Rounds -> SUBSET AllPrecommits]
+    /\ BenignRoundsInMessages(msgsPrecommit)
+    /\ evidence \in SUBSET (AllProposals \union AllPrevotes \union AllPrecommits)
+
+NoFutureMessagesSent(p) ==
+  \* a correct process does not send messages in the future
+  \A r \in { rr \in Rounds: rr >= round[p] }:
+    /\ step[p] /= "PROPOSE" \/ \A m \in msgsPropose[r]: m.src /= p
+    /\ \/ step[p] \in {"PREVOTE", "PRECOMMIT", "DECIDED"}
+       \/ \A m \in msgsPrevote[r]: m.src /= p
+    /\ \/ step[p] \in {"PRECOMMIT", "DECIDED"}
+       \/ \A m \in msgsPrecommit[r]: m.src /= p
+          
+AllNoFutureMessagesSent ==
+  \A p \in Corr:
+    NoFutureMessagesSent(p)                 
+
+IfInPrevoteThenSentPrevote(p) ==
+  step[p] = "PREVOTE" =>
+    \E m \in msgsPrevote[round[p]]:
+      /\ m.id \in ValidValues \cup { NilValue }
+      /\ m.src = p
+      
+AllIfInPrevoteThenSentPrevote ==
+  \A p \in Corr: IfInPrevoteThenSentPrevote(p)      
+
+IfInPrecommitThenSentPrecommit(p) ==
+  step[p] = "PRECOMMIT" =>
+    \E m \in msgsPrecommit[round[p]]:
+      /\ m.id \in ValidValues \cup { NilValue }
+      /\ m.src = p
+      
+AllIfInPrecommitThenSentPrecommit ==
+  \A p \in Corr: IfInPrecommitThenSentPrecommit(p)      
+
+IfInDecidedThenValidDecision(p) ==
+  step[p] = "DECIDED" <=> decision[p] \in ValidValues
+  
+AllIfInDecidedThenValidDecision ==
+  \A p \in Corr: IfInDecidedThenValidDecision(p)  
+
+IfInDecidedThenReceivedProposal(p) ==
+  step[p] = "DECIDED" =>
+    \E r \in Rounds: \* r is not necessarily round[p]
+      /\ \E m \in msgsPropose[r]:
+          /\ m.src = Proposer(r)
+          /\ m.proposal = decision[p]
+          \* not inductive: /\ m.src \in Corr => (m.validRound <= r)
+          
+AllIfInDecidedThenReceivedProposal ==
+  \A p \in Corr: IfInDecidedThenReceivedProposal(p)          
+
+IfInDecidedThenReceivedTwoThirds(p) ==
+  step[p] = "DECIDED" =>
+    \E r \in Rounds:
+      LET PV == { m \in msgsPrecommit[r]: m.id = decision[p] } IN
+        Cardinality(PV) >= THRESHOLD2
+        
+AllIfInDecidedThenReceivedTwoThirds ==
+  \A p \in Corr: IfInDecidedThenReceivedTwoThirds(p)        
+
+ProposalsNeverSendLargerValidRound ==
+  \A r \in Rounds:
+    \A m \in msgsPropose[r]:
+      \/ m.src \in Faulty
+      \/ m.validRound <= m.round
+
+ProposalInRound(r, proposedVal, vr) ==
+  \E m \in msgsPropose[r]:
+    /\ m.src = Proposer(r)
+    /\ m.proposal = proposedVal
+    /\ m.validRound = vr
+
+TwoThirdsPrevotes(vr, v) ==
+  LET PV == { mm \in msgsPrevote[vr]: mm.id = v } IN
+  Cardinality(PV) >= THRESHOLD2
+
+IfSentPrevoteThenReceivedProposalOrTwoThirds(r) ==
+  \A mpv \in msgsPrevote[r]:
+    \/ mpv.src \in Faulty
+      \* lockedRound and lockedValue is beyond my comprehension
+    \/ mpv.id = NilValue
+    \//\ mpv.src \in Corr
+      /\ mpv.id /= NilValue
+      /\ \/ ProposalInRound(r, mpv.id, NilRound)
+         \/ \E vr \in { rr \in Rounds: rr < r }:
+            /\ ProposalInRound(r, mpv.id, vr)
+            /\ TwoThirdsPrevotes(vr, mpv.id)
+
+AllIfSentPrevoteThenReceivedProposalOrTwoThirds ==
+  \A r \in Rounds:
+    IfSentPrevoteThenReceivedProposalOrTwoThirds(r)
+
+IfSentPrecommitThenReceivedTwoThirds ==
+  \A r \in Rounds:
+    \A mpc \in msgsPrecommit[r]:
+      \/ mpc.src \in Faulty
+      \/ /\ mpc.src \in Corr
+         /\ \/ /\ mpc.id \in ValidValues
+               /\ LET PV == { m \in msgsPrevote[r]: m.id = mpc.id } IN
+                  Cardinality(PV) >= THRESHOLD2
+            \/ /\ mpc.id = NilValue
+               /\ Cardinality(msgsPrevote[r]) >= THRESHOLD2
+
+LockedRoundIffLockedValue(p) ==
+  (lockedRound[p] = NilRound) <=> (lockedValue[p] = NilValue)
+  
+AllLockedRoundIffLockedValue ==
+  \A p \in Corr: LockedRoundIffLockedValue(p)
+            
+IfLockedRoundThenSentCommit(p) ==
+  lockedRound[p] /= NilRound
+    => \E r \in { rr \in Rounds: rr <= round[p] }:
+       \E m \in msgsPrecommit[r]:
+         m.src = p /\ m.id = lockedValue[p]
+         
+AllIfLockedRoundThenSentCommit ==
+  \A p \in Corr: IfLockedRoundThenSentCommit(p)
+         
+LatestPrecommitHasLockedRound(p) ==
+  LET pPrecommits == {mm \in UNION { msgsPrecommit[r]: r \in Rounds }: mm.src = p } IN
+  pPrecommits /= {} <: {MT}
+    => LET latest ==
+         CHOOSE m \in pPrecommits:
+           \A m2 \in pPrecommits:
+             m2.round < m.round
+       IN
+       /\ lockedRound[p] = latest.round
+       /\ lockedValue[p] = latest.id
+       
+AllLatestPrecommitHasLockedRound ==
+  \A p \in Corr:
+    LatestPrecommitHasLockedRound(p)
+    
+ValidRoundNotSmallerThanLockedRound(p) ==
+  validRound[p] >= lockedRound[p]
+  
+AllValidRoundNotSmallerThanLockedRound ==
+  \A p \in Corr:
+    ValidRoundNotSmallerThanLockedRound(p)
+
+ValidRoundIffValidValue(p) ==
+  (validRound[p] = NilRound) <=> (validValue[p] = NilValue)
+
+AllValidRoundIffValidValue ==
+  \A p \in Corr: ValidRoundIffValidValue(p)
+
+IfValidRoundThenTwoThirds(p) ==
+  \/ validRound[p] = NilRound
+  \/ LET PV == { m \in msgsPrevote[validRound[p]]: m.id = validValue[p] } IN
+     Cardinality(PV) >= THRESHOLD2
+     
+AllIfValidRoundThenTwoThirds ==
+  \A p \in Corr: IfValidRoundThenTwoThirds(p)     
+
+IfValidRoundThenProposal(p) ==
+  \/ validRound[p] = NilRound
+  \/ \E m \in msgsPropose[validRound[p]]:
+       m.proposal = validValue[p]
+
+AllIfValidRoundThenProposal ==
+  \A p \in Corr: IfValidRoundThenProposal(p)
+
+NoEquivocationByCorrect(r, msgs) ==
+  \* Every correct process sends only one value or NilValue.
+  \* This test has quantifier alternation -- a threat for all decision procedures.
+  \* Luckily, the sets Corr and ValidValues are small.
+  \A p \in Corr:
+    \E v \in ValidValues \cup {NilValue}:
+      \A m \in msgs[r]:
+        \/ m.src /= p
+        \/ m.id = v
+
+ProposalsByProposer(r, msgs) ==
+  \* if the proposer is not faulty, it sends only one value
+  \E v \in ValidValues:
+    \A m \in msgs[r]:
+      \/ m.src \in Faulty
+      \/ m.src = Proposer(r) /\ m.proposal = v
+    
+AllNoEquivocationByCorrect ==
+  \A r \in Rounds:
+    /\ ProposalsByProposer(r, msgsPropose)    
+    /\ NoEquivocationByCorrect(r, msgsPrevote)    
+    /\ NoEquivocationByCorrect(r, msgsPrecommit)    
+    
+Inv ==
+    /\ TypeOK
+    /\ AllNoFutureMessagesSent
+    /\ AllIfInPrevoteThenSentPrevote
+    /\ AllIfInPrecommitThenSentPrecommit
+    /\ AllIfInDecidedThenReceivedProposal 
+    /\ AllIfInDecidedThenReceivedTwoThirds 
+    /\ AllIfInDecidedThenValidDecision
+    /\ AllLockedRoundIffLockedValue
+    /\ AllIfLockedRoundThenSentCommit
+    /\ AllLatestPrecommitHasLockedRound
+    \* not inductive: /\ AllValidRoundNotSmallerThanLockedRound
+    /\ AllIfValidRoundThenTwoThirds
+    /\ AllIfValidRoundThenProposal
+    \* not inductive: /\ ProposalsNeverSendLargerValidRound
+    /\ AllIfSentPrevoteThenReceivedProposalOrTwoThirds
+    /\ IfSentPrecommitThenReceivedTwoThirds
+    /\ AllNoEquivocationByCorrect
+    
 (******************************** FORK ACCOUNTABILITY  ***************************************)
 NoEquivocation ==
     \A r \in Rounds:
