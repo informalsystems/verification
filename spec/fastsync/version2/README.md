@@ -3,13 +3,13 @@ The specification of the fastsync v2 scheduler handler in:
 
 Run with:
  - Constants:
-    numRequests <- 2
-    PeerIDs <- 0..2
-    ultimateHeight <- 3
- - Invariant:
-    TypeOK
+    - numRequests <- 2
+    - PeerIDs <- 0..2
+    - ultimateHeight <- 3
+ - Invariants:
+    - TypeOK
  - Properties:
-    TerminationWhenNoAdvance
-    GoodTermination
-    TougherTermination
+    - TerminationWhenNoAdvance
+    - GoodTermination
+    - TougherTermination
 
