@@ -1,6 +1,8 @@
+**fsPCBoundedBlocking.tla**
+
 PlusCal algorithm that:
  - shows deadlock when queues are bounded and senders block on queue full,
- - is very useful to inspect the generated TLA+ code (generate with cmd+T (mac) or ctrl+T (others)).
+ - is useful to inspect the generated TLA+ code (generate with cmd+T (mac) or ctrl+T (others)).
 
 Run with:
 - Constants:
@@ -11,3 +13,5 @@ Run with:
    - Termination
 
 Note: When running without the invariant, deadlock appears, otherwise invariant is violated
+
+**fsPCBoundedUnblocking.tla**
