@@ -1,4 +1,4 @@
-------------------------------- MODULE fsv2_scheduler ---------------------------------------------
+------------------------------- MODULE scheduler -------------------------------
 (*
  A specification of the fast sync scheduler that is introduced in blockchain/v2:
  
@@ -27,7 +27,7 @@ noErr == "errNone"
 Errors == {
   noErr, "errPeerNotFound", "errDelRemovedPeer", "errAddDuplicatePeer",
   "errUpdateRemovedPeer", "errAfterPeerRemove", "errBadPeer", "errBadPeerState",
-  "errProcessedBlockEv", "finished"}
+  "errProcessedBlockEv", "finished", "timeout", "errAddRemovedPeer"}
 
 PeerStates == {"peerStateUnknown", "peerStateNew", "peerStateReady", "peerStateRemoved"}
 
@@ -108,6 +108,8 @@ OutEvents ==
 addPeer(sc, peerID) == 
   IF peerID \in sc.peers THEN
     [err |-> "errAddDuplicatePeer", val |-> sc]
+  ELSE IF sc.peerStates[peerID] = "peerStateRemoved" THEN
+    [err |-> "errAddRemovedPeer", val |-> sc]
   ELSE
     LET newPeers == sc.peers \cup { peerID } IN
     LET newPeerHeights == [sc.peerHeights EXCEPT ![peerID] = None] IN
@@ -120,7 +122,7 @@ addPeer(sc, peerID) ==
 
 maxHeight(states, heights) ==
  LET activePeers == {p \in DOMAIN states: states[p] = "peerStateReady"} IN
- IF Cardinality(activePeers) = 0 THEN
+ IF activePeers = {} THEN
    0 \* no peers, just return 0
  ELSE 
    CHOOSE max \in { heights[p] : p \in activePeers }:
@@ -137,10 +139,12 @@ removePeer(sc, peerID) ==
   ELSE
     LET newSc == [sc EXCEPT 
       !.peers = sc.peers \ {peerID},
-      !.peerHeights = [sc.peerHeights EXCEPT ![peerID] = None],
-      !.peerStates = [sc.peerStates EXCEPT ![peerID] = "peerStateRemoved"],
+      !.peerHeights[peerID] = None,
+      !.peerStates[peerID] = "peerStateRemoved",
       \* remove all blocks from peerID and block requests to peerID, see scheduler.removePeer
-      !.blockStates = [h \in Heights |-> IF sc.pendingBlocks[h] = peerID THEN "blockStateNew" ELSE sc.blockStates[h]],
+      !.blockStates = [h \in Heights |->
+           IF sc.pendingBlocks[h] = peerID \/ sc.receivedBlocks[h] = peerID THEN "blockStateNew"
+           ELSE sc.blockStates[h]],
       !.pendingBlocks = [h \in Heights |-> IF sc.pendingBlocks[h] = peerID THEN None ELSE sc.pendingBlocks[h]],
       !.receivedBlocks = [h \in Heights |-> IF sc.receivedBlocks[h] = peerID THEN None ELSE sc.receivedBlocks[h]]
       ] IN                 
@@ -151,14 +155,12 @@ addNewBlocks(sc, newMph) ==
   IF Cardinality(sc.blocks) >= numRequests THEN
     [newBlocks |-> sc.blocks, newBlockStates |-> sc.blockStates]
   ELSE
-    LET newBlockStatesDomain == {h \in sc.height..numRequests+sc.height: h <= newMph} IN
-    LET newBlocks == {h \in newBlockStatesDomain: sc.blockStates[h] = "blockStateUnknown"} \cup sc.blocks IN
+    LET requestSet == sc.height.. Min(numRequests+sc.height, newMph) IN
+    LET heightsToRequest == {h \in requestSet: sc.blockStates[h] = "blockStateUnknown"} IN
     LET newBlockStates == [
-       h \in DOMAIN sc.blockStates |->
-          IF h \in newBlocks /\ sc.blockStates[h] = "blockStateUnknown" THEN
-            "blockStateNew"
+       h \in Heights |-> IF h \in heightsToRequest THEN "blockStateNew"
           ELSE sc.blockStates[h]] IN
-    [newBlocks |-> newBlocks, newBlockStates |-> newBlockStates]
+    [newBlocks |-> heightsToRequest, newBlockStates |-> newBlockStates]
  
 \* Update the peer height (the peer should have been previously added)                    
 setPeerHeight(sc, peerID, height) ==
@@ -167,8 +169,7 @@ setPeerHeight(sc, peerID, height) ==
   ELSE IF sc.peerStates[peerID] = "peerStateRemoved" THEN
     [err |-> "errUpdateRemovedPeer", val |-> sc]
   ELSE IF height < sc.peerHeights[peerID] THEN (* The peer is corrupt? Remove the peer. *)
-    LET res == removePeer(sc, peerID) IN
-    [err |-> res.err, val |-> res.val]
+    removePeer(sc, peerID)
   ELSE
     LET newPeerHeights == [sc.peerHeights EXCEPT ![peerID] = height] IN \* set the peer's height
     LET newPeerStates == [sc.peerStates EXCEPT ![peerID] = "peerStateReady"] IN \* set the peer's state
@@ -195,9 +196,7 @@ markPending(sc, peerID, h) ==
   LET blState == getStateAtHeight(sc, h) IN
   IF blState /= "blockStateNew" THEN
     [err |-> "errBadBlockState", val |-> sc]
-  ELSE IF peerID \notin sc.peers THEN
-    [err |-> "errPeerNotFound", val |-> sc]
-  ELSE IF sc.peerStates[peerID] /= "peerStateReady" THEN
+  ELSE IF peerID \notin sc.peers \/ sc.peerStates[peerID] /= "peerStateReady" THEN
     [err |-> "errBadPeerState", val |-> sc]
   ELSE IF h > sc.peerHeights[peerID] THEN
     [err |-> "errPeerTooShort", val |-> sc]
@@ -208,10 +207,11 @@ markPending(sc, peerID, h) ==
     [err |-> noErr, val |-> newSc]
 
 markReceived(sc, peerID, h) ==
-  IF peerID \notin sc.peers /\ sc.peerStates[peerID] /= "peerStateReady" THEN
+  IF peerID \notin sc.peers \/ sc.peerStates[peerID] /= "peerStateReady" THEN
     [err |-> "errBadPeerState", val |-> sc]
-  ELSE IF getStateAtHeight(sc, h) /= "blockStateNew" /\ sc.pendingBlocks[h] /= peerID THEN
-    [err |-> "errBadPeer", val |-> sc]
+  ELSE IF getStateAtHeight(sc, h) /= "blockStateNew" \/ sc.pendingBlocks[h] /= peerID THEN
+    LET res == removePeer(sc, peerID) IN
+    [err |-> "errBadPeer", val |-> res.val]
   ELSE
     LET newSc == [sc EXCEPT
       !.blockStates = [sc.blockStates EXCEPT ![h] = "blockStateReceived"],
@@ -230,11 +230,13 @@ markProcessed(sc, h) ==
     [err |-> noErr, val |-> newSc]
 
 allBlocksProcessed(sc) ==
-  IF Cardinality(sc.peers) = 0 THEN
+  IF sc.peers = {} THEN
     FALSE
   ELSE
     LET maxH == maxHeightScheduler(sc) IN
     maxH > 0 /\ (sc.height >= maxH)
+ 
+highPeers(sc, minH) == {p \in sc.peers: sc.peerHeights[p] >= minH}
 
 (* ----------------------------------------------------------------------------------------------*)
 (* The behavior of the scheduler state machine                                                   *)
@@ -293,32 +295,27 @@ handleStatusResponse ==
        /\ outEvent' = noEvent
   /\ UNCHANGED scRunning
 
-selectPeer(sc, minH) ==
-  LET highPeers == {p \in sc.peers: sc.peerHeights[p] >= minH} IN
-  IF Cardinality(highPeers) = 0 THEN None ELSE CHOOSE p \in highPeers: TRUE
-
 handleTrySchedule == \* every 10 ms, but our spec is asynchronous
   /\ inEvent.type = "rTrySchedule"
   /\ LET minH == nextHeightToSchedule(scheduler) IN
      IF minH = None THEN
        /\ outEvent'.type = noEvent
        /\ UNCHANGED scheduler
+     ELSE IF minH = ultimateHeight+1 THEN
+       /\ outEvent' = noEvent
+       /\ UNCHANGED scheduler
      ELSE
-       IF minH = ultimateHeight+1 THEN
-         /\ outEvent' = noEvent
-         /\ UNCHANGED scheduler
-       ELSE
-         /\ LET bestPeerID == selectPeer(scheduler, minH) IN
-            IF bestPeerID = None THEN
-              /\ outEvent' = noEvent
-              /\ UNCHANGED scheduler
-            ELSE
-              /\ LET res == markPending(scheduler, bestPeerID, minH) IN
-                 IF res.err /= noErr THEN
-                   outEvent' = noEvent \* should send some other event here
-                 ELSE
-                   outEvent' = [type |-> "scBlockRequest", peerID |-> bestPeerID, height |-> minH]
-                 /\ scheduler' = res.val
+       /\ LET hp == highPeers(scheduler, minH) IN
+          IF hp = {} THEN
+            /\ outEvent' = noEvent
+            /\ UNCHANGED scheduler
+          ELSE \E bestPeerID \in hp:
+            /\ LET res == markPending(scheduler, bestPeerID, minH) IN
+               IF res.err /= noErr THEN
+                 outEvent' = noEvent \* should send some other event here
+               ELSE
+                 outEvent' = [type |-> "scBlockRequest", peerID |-> bestPeerID, height |-> minH]
+               /\ scheduler' = res.val
   /\ UNCHANGED scRunning
 
 handleBlockResponse ==
@@ -364,7 +361,8 @@ handleBlockProcessError ==
 onNoAdvanceExp ==
     /\ inEvent.type = "tNoAdvanceExp"
     /\ scRunning' = FALSE
-    /\ UNCHANGED <<outEvent, scheduler>>
+    /\ outEvent' = [type |-> "scFinishedEv", reason |-> "timeout"]
+    /\ UNCHANGED <<scheduler>>
 
 NextSc ==
   IF ~scRunning
@@ -468,7 +466,24 @@ Next == \* scheduler and environment alternate their steps (synchronous composit
 (* ----------------------------------------------------------------------------------------------*)
 (* Expected properties                                                                           *)
 (* ----------------------------------------------------------------------------------------------*)
+(*
+Termination conditions => WIP
 
+1. TerminationWhenNoAdvance - termination if there are no correct peers.
+
+2. GoodTerminationGoodFixedPeers - the node makes steady advance under "good conditions", i.e. no bad peers and
+ all peers have constant height, eventually we terminate at the max peer height.
+
+3. NeverTerminates - same as 2 but peers increase their heights.
+3'. GoodTerminationGoodGrowingPeers - same as 2 but the blockchain grows slower than fastsync.
+
+4. GoodTerminationGoodEventuallyFixedPeers - the node makes steady advance under "good conditions", i.e. no bad peers and
+ after some time all peers have unchanged height, eventually we terminate at max peer height.
+
+5. TerminationMixedFixedPeers - fixed set of peers, no height updates, some peers are faulty some correct =>
+reach the max height of correct peers
+
+*)
 TypeOK ==
     /\ turn \in {"scheduler", "environment"}
     /\ inEvent \in InEvents
@@ -485,28 +500,28 @@ TypeOK ==
          pendingBlocks: [Heights -> PeerIDs \cup {None}],
          receivedBlocks: [Heights -> PeerIDs \cup {None}]
        ]
-       
+
 TerminationWhenNoAdvance ==
   (WF_turn(FlipTurn) /\ <> (inEvent.type = "tNoAdvanceExp"))
     => <> ~scRunning
 
 NoFailuresAndTimeouts ==
-    \* no peer removal
     /\ inEvent.type /= "peerRemoveEv"
-    \* no invalid blocks
     /\ inEvent.type /= "bcNoBlockResponse"
     /\ inEvent.type /= "pcBlockVerificationFailure"
+
 NoGlobalTimeout == inEvent.type /= "tNoAdvanceExp"
 
+\* simulate good peer behavior using this formula. Useful to show termination in the presence of good peers.
 FiniteResponse ==
     <>[] (inEvent.type
-         \in {"bcAddNewPeer", "bcStatusResponse", "bcBlockResponse", "pcBlockProcessed", "pcBlockVerificationFailure", "rTrySchedule"})
+         \in {"bcAddNewPeer", "bcStatusResponse", "bcBlockResponse", "pcBlockProcessed", "rTrySchedule", "tNoAdvanceExp"})
 
 \* all blocks from initHeight up to max peer height have been processed
 AllRequiredBlocksProcessed ==
   LET maxH == maxHeightScheduler(scheduler) IN
-  LET unprocessedBlocks == {\A h \in scheduler.initHeight.. maxH: scheduler.blockStates[h] /= "blockStateProcessed"} IN
-  scheduler.height >= maxH /\ Cardinality(unprocessedBlocks) = 0
+  LET processedBlocks == {h \in scheduler.initHeight.. maxH: scheduler.blockStates[h] /= "blockStateProcessed"} IN
+  scheduler.height >= maxH /\ Cardinality(processedBlocks) = scheduler.height - 1
 
 GoodTermination ==
   (WF_turn(FlipTurn) /\ []NoGlobalTimeout /\ []NoFailuresAndTimeouts /\ FiniteResponse)
@@ -515,18 +530,31 @@ GoodTermination ==
 \* TougherTermination is the termination property we like more and it holds true.
 \* When IncreaseHeight holds true, fastsync is progressing, unless it has hit the ceiling.
 IncreaseHeight ==
-    scheduler'.height > scheduler.height \/ scheduler'.height >= ultimateHeight
+  scheduler'.height > scheduler.height \/ scheduler'.height >= ultimateHeight
 
 TougherTermination ==
   (scheduler.height < ultimateHeight
-    /\ (WF_turn(FlipTurn)
+    /\ WF_turn(FlipTurn)
     /\ SF_inEvent(OnTrySchedule)
     /\ FiniteResponse
     /\ (([]<> (<<IncreaseHeight>>_scheduler)) \/ <>(inEvent.type = "tNoAdvanceExp"))
-  )) \***
-       => <>(outEvent.type = "ScFinishedEv" /\ AllRequiredBlocksProcessed)
+  ) \***
+       => <>(outEvent.type = "scFinishedEv" /\
+             IF outEvent.reason = "finished" THEN
+               AllRequiredBlocksProcessed
+             ELSE
+               outEvent.reason = "timeout")
+
+TougherTerminationOld ==
+  (scheduler.height < ultimateHeight
+    /\ WF_turn(FlipTurn)
+    /\ SF_inEvent(OnTrySchedule)
+    /\ FiniteResponse
+    /\ (([]<> (<<IncreaseHeight>>_scheduler)) \/ <>(inEvent.type = "tNoAdvanceExp"))
+  ) \***
+       => <>(outEvent.type = "scFinishedEv" /\ AllRequiredBlocksProcessed)
 
 =============================================================================
 \* Modification History
-\* Last modified Sat Feb 08 18:47:52 CET 2020 by ancaz
+\* Last modified Thu Feb 13 15:14:32 CET 2020 by ancaz
 \* Created Sat Feb 08 13:12:30 CET 2020 by ancaz
