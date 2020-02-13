@@ -37,7 +37,6 @@ BlockStates == {
 
 \* basic stuff
 Min(a, b) == IF a < b THEN a ELSE b
-Max(a, b) == IF a > b THEN a ELSE b
 
 \* the state of the scheduler:
 VARIABLE  turn          \* who makes a step: the scheduler or the environment
@@ -299,7 +298,7 @@ handleTrySchedule == \* every 10 ms, but our spec is asynchronous
   /\ inEvent.type = "rTrySchedule"
   /\ LET minH == nextHeightToSchedule(scheduler) IN
      IF minH = None THEN
-       /\ outEvent'.type = noEvent
+       /\ outEvent' = noEvent
        /\ UNCHANGED scheduler
      ELSE IF minH = ultimateHeight+1 THEN
        /\ outEvent' = noEvent
@@ -312,7 +311,7 @@ handleTrySchedule == \* every 10 ms, but our spec is asynchronous
           ELSE \E bestPeerID \in hp:
             /\ LET res == markPending(scheduler, bestPeerID, minH) IN
                IF res.err /= noErr THEN
-                 outEvent' = noEvent \* should send some other event here
+                 outEvent' = [type |-> "scSchedulerFail", error|-> res.err]
                ELSE
                  outEvent' = [type |-> "scBlockRequest", peerID |-> bestPeerID, height |-> minH]
                /\ scheduler' = res.val
@@ -464,7 +463,7 @@ Next == \* scheduler and environment alternate their steps (synchronous composit
        /\ UNCHANGED <<scRunning, scheduler>>  
 
 (* ----------------------------------------------------------------------------------------------*)
-(* Expected properties                                                                           *)
+(* Expected properties  => Work In Progress                                                      *)
 (* ----------------------------------------------------------------------------------------------*)
 (*
 Termination conditions => WIP
@@ -556,5 +555,5 @@ TougherTerminationOld ==
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Feb 13 15:14:32 CET 2020 by ancaz
+\* Last modified Thu Feb 13 21:27:19 CET 2020 by ancaz
 \* Created Sat Feb 08 13:12:30 CET 2020 by ancaz
