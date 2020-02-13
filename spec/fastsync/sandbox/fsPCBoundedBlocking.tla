@@ -1,7 +1,13 @@
 ------------------------ MODULE fsPCBoundedBlocking ------------------------
 
 EXTENDS TLC, Integers, Sequences
-CONSTANTS MaxQueueSize
+CONSTANTS
+  MaxQueueSize,
+  \* peers send unsolicited responses with numbers >= baseID
+  baseID,
+  \* number of responses demux waits before finishing
+  minNumResp
+
 None == -1  
 
 (*--algorithm message_queue
@@ -71,18 +77,17 @@ begin Demux:
       add_to_blocking_queue(Asend_q, [type |-> "bcStatusRequest", num |-> counter]);
       counter := counter + 1;
     or
-      await Len(Cdemux_q) > 0;
-        read_from_queue(Cdemux_q);
-        if msg.type = "bcStatusResponse" then
-          \* terminates on the third status response from peer/ receive
-          if msg.num > 2 /\ msg.num < 1000 then
-              done := TRUE;
-              goto Done;
-          else
-            add_to_blocking_queue(Asend_q, [type |-> "bcStatusRequest", num |-> counter]);
-            counter := counter + 1;          
-          end if;
+      read_from_queue(Cdemux_q);
+      if msg.type = "bcStatusResponse" then
+        \* terminates on the third status response from peer/ receive
+        if msg.num > 0 /\ msg.num < baseID then
+          done := TRUE;
+          goto Done;
+        else
+          add_to_unblocking_queue(Asend_q, [type |-> "bcStatusRequest", num |-> counter]);
+          counter := counter + 1;
         end if;
+      end if;
       
     end either;      
   end while;
@@ -102,7 +107,7 @@ end process;
 
 process receive \in {"p1_rx"}
 variables
-  counter = 1000
+  counter = baseID
 begin Receive:
   while TRUE do
     if done then
@@ -151,7 +156,7 @@ Init == (* Global variables *)
         (* Process demux *)
         /\ counter_ = 1
         (* Process receive *)
-        /\ counter = [self \in {"p1_rx"} |-> 1000]
+        /\ counter = [self \in {"p1_rx"} |-> baseID]
         /\ pc = [self \in ProcSet |-> CASE self = "demux" -> "Demux"
                                         [] self \in {"p1_tx"} -> "Send"
                                         [] self \in {"p1_rx"} -> "Receive"]
@@ -167,7 +172,7 @@ Demux == /\ pc["demux"] = "Demux"
                /\ msg' = Head(Cdemux_q)
                /\ Cdemux_q' = Tail(Cdemux_q)
                /\ IF msg'.type = "bcStatusResponse"
-                     THEN /\ IF msg'.num > 2 /\ msg'.num < 1000
+                     THEN /\ IF msg'.num > minNumResp /\ msg'.num < baseID
                                 THEN /\ done' = TRUE
                                      /\ pc' = [pc EXCEPT !["demux"] = "Done"]
                                      /\ UNCHANGED << Asend_q, counter_ >>
@@ -232,5 +237,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Feb 07 20:04:38 CET 2020 by ancaz
+\* Last modified Thu Feb 13 16:01:13 CET 2020 by ancaz
 \* Created Tue Jan 07 16:21:41 CET 2020 by ancaz

@@ -7,6 +7,10 @@ PlusCal algorithm that:
 Run with:
 - Constants:
    - MaxQueueSize <- 2
+   - MinNumResp <- 2
+      the minimum number of request/reply messages before the demux process finished...just a simple way to stop
+   - BaseID <- 1000
+      this is the response message number base at which peer unsolicited messages start
 - Invariant:
    - ~NotFilledQueues
 - Temporal Formulas:
