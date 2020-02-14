@@ -56,9 +56,9 @@ VARIABLE scheduler
          height: Int,
             height of the next block to collect
          peers: PeerIDs,
-            the set of active peers, not known to be faulty
+            the set of peers that have connected in the past, may include removed peers
          peerHeights: [PeerIDs -> Heights],
-            a map to collect the peer responses about their heights 
+            a map to collect the peer heights, >0 if peer in ready state, None (-1) otherwise
          peerStates: [PeerIDs -> PeerStates],
             a map to record the peer states 
          blockStates: [Heights -> BlockStates]
@@ -137,7 +137,6 @@ removePeer(sc, peerID) ==
     [err |-> "errDelRemovedPeer", val |-> sc]
   ELSE
     LET newSc == [sc EXCEPT 
-      !.peers = sc.peers \ {peerID},
       !.peerHeights[peerID] = None,
       !.peerStates[peerID] = "peerStateRemoved",
       \* remove all blocks from peerID and block requests to peerID, see scheduler.removePeer
@@ -192,8 +191,7 @@ getStateAtHeight(sc, h) ==
     "blockStateUnknown"
     
 markPending(sc, peerID, h) ==
-  LET blState == getStateAtHeight(sc, h) IN
-  IF blState /= "blockStateNew" THEN
+  IF getStateAtHeight(sc, h) /= "blockStateNew" THEN
     [err |-> "errBadBlockState", val |-> sc]
   ELSE IF peerID \notin sc.peers \/ sc.peerStates[peerID] /= "peerStateReady" THEN
     [err |-> "errBadPeerState", val |-> sc]
@@ -208,9 +206,8 @@ markPending(sc, peerID, h) ==
 markReceived(sc, peerID, h) ==
   IF peerID \notin sc.peers \/ sc.peerStates[peerID] /= "peerStateReady" THEN
     [err |-> "errBadPeerState", val |-> sc]
-  ELSE IF getStateAtHeight(sc, h) /= "blockStateNew" \/ sc.pendingBlocks[h] /= peerID THEN
-    LET res == removePeer(sc, peerID) IN
-    [err |-> "errBadPeer", val |-> res.val]
+  ELSE IF getStateAtHeight(sc, h) /= "blockStatePending" \/ sc.pendingBlocks[h] /= peerID THEN
+    [err |-> "errBadPeer", val |-> sc]
   ELSE
     LET newSc == [sc EXCEPT
       !.blockStates = [sc.blockStates EXCEPT ![h] = "blockStateReceived"],
@@ -321,8 +318,9 @@ handleBlockResponse ==
   /\ inEvent.type = "bcBlockResponse"
   /\ LET res == markReceived(scheduler, inEvent.peerID, inEvent.height) IN
      IF res.err /= noErr THEN
+       LET res1 == removePeer(scheduler, inEvent.peerID) IN
        /\ outEvent' = [type |-> "scPeerError", peerID |-> inEvent.peerID, reason |-> res.err]
-       /\ UNCHANGED scheduler
+       /\ scheduler' = res1.val
      ELSE
        /\ outEvent' = [type |-> "scBlockReceived", peerID |-> inEvent.peerID, block |-> inEvent.block]
        /\ scheduler' = res.val
@@ -330,10 +328,11 @@ handleBlockResponse ==
 
 handleNoBlockResponse ==
   /\ inEvent.type = "bcNoBlockResponse"
-  /\ \/ (scheduler.peers = {} \/ scheduler.peerStates[inEvent.peerID] = "peerStateRemoved")
+  /\ IF (scheduler.peers = {} \/ scheduler.peerStates[inEvent.peerID] = "peerStateRemoved") THEN
         /\ outEvent' = noEvent
         /\ UNCHANGED scheduler
-     \/ LET res == removePeer(scheduler, inEvent.peerID) IN
+     ELSE
+       LET res == removePeer(scheduler, inEvent.peerID) IN
         /\ outEvent' = [type |-> "scPeerError", peerID |-> inEvent.peerID, reason |-> "errPeerNoBlock"]
         /\ scheduler' = res.val
   /\ UNCHANGED scRunning
@@ -358,10 +357,11 @@ handleBlockProcessed ==
 
 handleBlockProcessError ==
   /\ inEvent.type = "pcBlockVerificationFailure"
-  /\ \/ scheduler.peers = {}
+  /\ IF scheduler.peers = {} THEN
         /\ outEvent' = noEvent
         /\ UNCHANGED scheduler
-     \/ LET res1 == removePeer(scheduler, inEvent.firstPeerID) IN
+     ELSE
+        LET res1 == removePeer(scheduler, inEvent.firstPeerID) IN
         LET res2 == removePeer(res1.val, inEvent.secondPeerID) IN
           /\ IF allBlocksProcessed(res2.val) THEN
                outEvent' = [type |-> "scFinishedEv", reason |-> "finished"]
@@ -503,6 +503,7 @@ Termination conditions => WIP
 reach the max height of correct peers
 
 *)
+ 
 TypeOK ==
     /\ turn \in {"scheduler", "environment"}
     /\ inEvent \in InEvents
@@ -575,5 +576,5 @@ TougherTerminationOld ==
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Feb 14 08:35:28 CET 2020 by ancaz
+\* Last modified Fri Feb 14 10:06:06 CET 2020 by ancaz
 \* Created Sat Feb 08 13:12:30 CET 2020 by ancaz
