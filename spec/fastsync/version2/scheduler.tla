@@ -2,7 +2,7 @@
 (*
  A specification of the fast sync scheduler that is introduced in blockchain/v2:
  
- https://github.com/tendermint/tendermint/blockchain/v2
+ https://github.com/tendermint/tendermint/tree/brapse/blockchain-v2-riri-reactor-2
  
  The model includes:
     - a scheduler that maintains the peers and blocks that it receives from the peers, and
@@ -101,7 +101,7 @@ OutEvents ==
 (* ----------------------------------------------------------------------------------------------*)
 (* The behavior of the scheduler that keeps track of peers, block requests and responses, etc.   *)
 (* See scheduler.go                                                                              *)
-(* https://github.com/tendermint/tendermint/blockchain/v2/scheduler.go                           *)
+(* https://github.com/tendermint/tendermint/tree/brapse/blockchain-v2-riri-reactor-2/scheduler.go*)
 (* ----------------------------------------------------------------------------------------------*)
 
 addPeer(sc, peerID) == 
@@ -237,7 +237,7 @@ highPeers(sc, minH) == {p \in sc.peers: sc.peerHeights[p] >= minH}
 (* ----------------------------------------------------------------------------------------------*)
 (* The behavior of the scheduler state machine                                                   *)
 (* See scheduler.go                                                                              *)
-(* https://github.com/tendermint/tendermint/blockchain/v2/scheduler.go                           *)
+(* https://github.com/tendermint/tendermint/tree/brapse/blockchain-v2-riri-reactor-2/scheduler.go*)
 (* ----------------------------------------------------------------------------------------------*)
 InitSc ==
   /\ scRunning = TRUE
@@ -576,5 +576,5 @@ TougherTerminationOld ==
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Feb 14 10:06:06 CET 2020 by ancaz
+\* Last modified Fri Feb 14 10:20:09 CET 2020 by ancaz
 \* Created Sat Feb 08 13:12:30 CET 2020 by ancaz
