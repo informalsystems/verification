@@ -12,7 +12,7 @@
  Communication between the scheduler and the other fastsync components is not specified.
 *)
 
-EXTENDS Integers, FiniteSets, TLC
+EXTENDS Integers, FiniteSets
 
 \* the protocol parameters
 CONSTANTS
@@ -576,5 +576,5 @@ TougherTerminationOld ==
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Feb 14 10:20:09 CET 2020 by ancaz
+\* Last modified Fri Feb 14 10:29:51 CET 2020 by ancaz
 \* Created Sat Feb 08 13:12:30 CET 2020 by ancaz
