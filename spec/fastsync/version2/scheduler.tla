@@ -27,7 +27,7 @@ noErr == "errNone"
 Errors == {
   noErr, "errPeerNotFound", "errDelRemovedPeer", "errAddDuplicatePeer",
   "errUpdateRemovedPeer", "errAfterPeerRemove", "errBadPeer", "errBadPeerState",
-  "errProcessedBlockEv", "finished", "timeout", "errAddRemovedPeer"}
+  "errProcessedBlockEv", "finished", "timeout", "errAddRemovedPeer", "errPeerNoBlock"}
 
 PeerStates == {"peerStateUnknown", "peerStateNew", "peerStateReady", "peerStateRemoved"}
 
@@ -328,6 +328,16 @@ handleBlockResponse ==
        /\ scheduler' = res.val
   /\ UNCHANGED scRunning
 
+handleNoBlockResponse ==
+  /\ inEvent.type = "bcNoBlockResponse"
+  /\ \/ (scheduler.peers = {} \/ scheduler.peerStates[inEvent.peerID] = "peerStateRemoved")
+        /\ outEvent' = noEvent
+        /\ UNCHANGED scheduler
+     \/ LET res == removePeer(scheduler, inEvent.peerID) IN
+        /\ outEvent' = [type |-> "scPeerError", peerID |-> inEvent.peerID, reason |-> "errPeerNoBlock"]
+        /\ scheduler' = res.val
+  /\ UNCHANGED scRunning
+
 handleBlockProcessed ==
   /\ inEvent.type = "pcBlockProcessed"
   /\ IF inEvent.height /= scheduler.height THEN
@@ -348,13 +358,16 @@ handleBlockProcessed ==
 
 handleBlockProcessError ==
   /\ inEvent.type = "pcBlockVerificationFailure"
-  /\ LET res1 == removePeer(scheduler, inEvent.firstPeerID) IN
-     LET res2 == removePeer(res1.val, inEvent.secondPeerID) IN
-     /\ IF allBlocksProcessed(res2.val) THEN
-         outEvent' = [type |-> "scFinishedEv", reason |-> "finished"]
-       ELSE
-         outEvent' = noEvent
-     /\ scheduler' = res2.val
+  /\ \/ scheduler.peers = {}
+        /\ outEvent' = noEvent
+        /\ UNCHANGED scheduler
+     \/ LET res1 == removePeer(scheduler, inEvent.firstPeerID) IN
+        LET res2 == removePeer(res1.val, inEvent.secondPeerID) IN
+          /\ IF allBlocksProcessed(res2.val) THEN
+               outEvent' = [type |-> "scFinishedEv", reason |-> "finished"]
+             ELSE
+               outEvent' = noEvent
+          /\ scheduler' = res2.val
   /\ UNCHANGED scRunning
 
 onNoAdvanceExp ==
@@ -372,6 +385,7 @@ NextSc ==
     \/ handleRemovePeer
     \/ handleTrySchedule
     \/ handleBlockResponse
+    \/ handleNoBlockResponse
     \/ handleBlockProcessed
     \/ handleBlockProcessError
     \/ onNoAdvanceExp
@@ -406,6 +420,11 @@ OnBlockResponseEv ==
   /\ inEvent' \in [type: {"bcBlockResponse"}, peerID: PeerIDs, height: Heights, block: Blocks]
   /\ UNCHANGED envRunning
 
+OnNoBlockResponseEv ==
+  \* any no block response can come from the blockchain, pick one non-deterministically
+  /\ inEvent' \in [type: {"bcNoBlockResponse"}, peerID: PeerIDs, height: Heights]
+  /\ UNCHANGED envRunning
+
 OnRemovePeerEv ==
   \* although peerRemoveEv admits an arbitrary set, we produce just a singleton
   /\ inEvent' \in [type: {"bcRemovePeer"}, peerID: PeerIDs]
@@ -434,6 +453,7 @@ NextEnv ==
     \/ OnTrySchedule
     \/ OnStatusResponseEv
     \/ OnBlockResponseEv
+    \/ OnNoBlockResponseEv
     \/ OnRemovePeerEv
     \/ OnPcBlockProcessed
     \/ OnPcBlockVerificationFailure
@@ -555,5 +575,5 @@ TougherTerminationOld ==
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Feb 13 21:27:19 CET 2020 by ancaz
+\* Last modified Fri Feb 14 08:35:28 CET 2020 by ancaz
 \* Created Sat Feb 08 13:12:30 CET 2020 by ancaz
