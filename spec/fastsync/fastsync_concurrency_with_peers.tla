@@ -2,7 +2,6 @@
 
 \* Reference go code :
 \* https://github.com/tendermint/tendermint/blob/brapse/blockchain-v2-riri-reactor/blockchain/v2
-\* commit: f7b76d5
 \* all buffers are bounded and blocking
 
 EXTENDS Naturals, FiniteSets, Sequences
@@ -16,58 +15,118 @@ VARIABLES turn, \* which routine is taking a step
           processDemux, \* the buffer from the process routine to the demux routine
           demuxSchedule, \* the buffer from the demux routine to the schedule routine
           scheduleDemux, \* the buffer from the scheudle routine to the demux routine
-          peers, \* the peer buffers
+          peerIncoming, \* the buffers incoming to the peers
+          peerOutgoing, \* the buffers incoming from the peers
           peerTurn \* the current peer that receives a block request and sends a block response
 
 \* set of peers
 PeerIDs == 1..NrPeers
 
-vars == <<turn, receiveDemux, demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux, peers, peerTurn>>          
+vars == <<turn, receiveDemux, demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux, peerIncoming, peerOutgoing, peerTurn>>          
 buffers == <<receiveDemux, demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux>>
-peer == <<peers, peerTurn>>
+peer == <<peerIncoming, peerOutgoing, peerTurn>>
 
 \* set of messages that the peers send to the receive routine
 peerMsgs == {"bcAddNewPeer", "bcBlockResponse", "bcNoBlockResponse", "bcRemovePeer", "bcStatusResponse"} 
 
 \* set of messages that the process routine sends to the demux routine (forwarded to the schedule routine)
-processMsgs == {"pcBlockProcessed", "pcBlockVerificationFailure"} 
+processDemuxMsgs == {"pcBlockProcessed", "pcBlockVerificationFailure"} 
 
 \* set of messages that the schedule routine sends to the demux routine (forwarded to the process routine)
-scheduleMsgs == {"scBlockReceived", "scFinishedEv", "scPeerError", "scSchedulerFail"} 
+scheduleDemuxMsgs == {"scBlockReceived", "scFinishedEv", "scPeerError", "scSchedulerFail"} 
 
-\* set of io messages that the demux routine sends to the send routine (blockRequest) or broadcasts to all peers (statusRequest)
-ioMsgs == {"scBlockRequest", "bcStatusRequest"}  
+\* set of messages that the demux routine sends to the send routine (blockRequest) 
+demuxSendMsgs == {"scBlockRequest"}  
 
-\* set of messages that are sent periodically (we model them by non-determinism) 
-timerMsgs == {"rBlockProcessed"}
+\* set of messages that the demux routine broadcasts to all peers (statusRequest)
+demuxPeerMsgs == {"bcStatusRequest"}
+
+ioMsgs == demuxSendMsgs \cup demuxPeerMsgs
+
+\* set of messages that the demux routine sends to the process routine  
+demuxProcessMsgs == {"rProcessBlock", "scBlockReceived", "scFinishedEv", "scPeerError"}
+
+\* set of messages that the demux routine sends to the schedule routine 
+demuxScheduleMsgs == peerMsgs \cup processDemuxMsgs 
 
 \* special message denoting no message
 noMsg == "noMsg"
 
 \* set of all messages
-Msgs == peerMsgs \cup processMsgs \cup scheduleMsgs \cup ioMsgs \cup timerMsgs \cup {noMsg}
+Msgs == peerMsgs \cup demuxSendMsgs \cup demuxProcessMsgs \cup processDemuxMsgs \cup demuxScheduleMsgs \cup scheduleDemuxMsgs \cup demuxPeerMsgs \cup {noMsg}
  
 \* set of turns used to schedule the different routines
-Turns == {"receiveRoutine", "demuxRoutine", "sendRoutine", "processRoutine", "scheduleRoutine", "peer"} 
+Turns == {"receiveRoutine", "demuxRoutine", "sendRoutine", "processRoutine", "scheduleRoutine", "peer", "buffer"} 
 
-\* useful queue predicates/actions  
-\* a queue is full if its length is equal to QueueLength   
-Full(queue) ==
-    Len(queue) = QueueLength
+\* useful buffer predicates/actions  
+\* a buffer is full if the length of its queue is greater or equal to QueueLength      
+Full(buffer) ==
+    Len(buffer.queue) >= QueueLength
     
-\* a queue is empty if its length is equal to 0    
-Empty(queue) ==
-    Len(queue) = 0 
+\* a buffer is empty if its queue is the empty sequence    
+Empty(buffer) ==
+    buffer.queue = <<>> 
+
+\* a buffer is ready to get a message if its inMsg is noMsg   
+Ready(buffer) ==
+    buffer.inMsg = noMsg
+
+\* get the message at the head of the buffer queue
+GetMessage(buffer) ==
+    Head(buffer.queue) 
+
+\* compute the outcome of a routine sending a message to a buffer: set the inMsg of the buffer to some msg \in msgs    
+RoutineSend(buffer, msgs) ==
+    IF noMsg \in msgs
+    THEN {buffer} \cup {[buffer EXCEPT !.inMsg = msg] : msg \in msgs \ {noMsg}}
+    ELSE {[buffer EXCEPT !.inMsg = msg] : msg \in msgs}
+
+\* compute the outcome of a peer sending a message to a buffer: set the inMsg of the buffer of peerID to some msg \in msgs    
+PeerSend(buffer, peerID, msgs) ==
+    IF noMsg \in msgs
+    THEN {buffer} \cup {[buffer EXCEPT ![peerID].inMsg = msg] : msg \in msgs \ {noMsg}}
+    ELSE {[buffer EXCEPT ![peerID].inMsg = msg] : msg \in msgs}
+
+\* compute the outcome of a broadcast to all peers: set the inMsg of the buffer for every peer to some msg \in msgs  
+PeerBroadcast(buffer, msg) ==
+    [peerID \in PeerIDs |-> [buffer[peerID] EXCEPT !.inMsg = msg]]
  
+\* internal buffer receive: add the inMsg to the queue 
+BufRcv(buffer) ==
+    IF /\ ~Ready(buffer)
+       /\ ~Full(buffer)
+       /\ buffer.inMsg /= noMsg
+    THEN [buffer EXCEPT !.queue = Append(buffer.queue, buffer.inMsg), !.inMsg = noMsg]
+    ELSE buffer     
+    
+
+\* initial value of each buffer: the queue is empty, the inMsg is noMsg
+initBuffer ==
+    [inMsg |-> noMsg, queue |-> <<>>]
+
+\* type invariant
+TypeOK ==
+    /\ turn \in Turns
+    /\ receiveDemux \in [inMsg : peerMsgs \cup {noMsg}, queue : Seq(peerMsgs)]
+    /\ demuxSend \in [inMsg : demuxSendMsgs \cup {noMsg}, queue : Seq(demuxSendMsgs)]
+    /\ demuxProcess \in [inMsg : demuxProcessMsgs \cup {noMsg}, queue : Seq(demuxProcessMsgs)]
+    /\ processDemux \in [inMsg : processDemuxMsgs \cup {noMsg}, queue : Seq(processDemuxMsgs)]
+    /\ demuxSchedule \in [inMsg : demuxScheduleMsgs \cup {noMsg}, queue : Seq(demuxScheduleMsgs)]
+    /\ scheduleDemux \in [inMsg : scheduleDemuxMsgs \cup {noMsg}, queue : Seq(scheduleDemuxMsgs)]
+    /\ \A peerID \in PeerIDs : peerIncoming[peerID] \in [inMsg : ioMsgs \cup {noMsg}, queue : Seq(ioMsgs)]
+    /\ \A peerID \in PeerIDs : peerOutgoing[peerID] \in [inMsg : peerMsgs \cup {noMsg}, queue : Seq(peerMsgs)]
+    /\ peerTurn \in PeerIDs
+
 Init ==
     /\ turn \in Turns \* starting in any routine 
-    /\ receiveDemux = <<>>   
-    /\ demuxSend = <<>>
-    /\ demuxProcess = <<>>
-    /\ processDemux = <<>>
-    /\ demuxSchedule = <<>>
-    /\ scheduleDemux = <<>>
-    /\ peers = [peerID \in PeerIDs |-> <<>>]
+    /\ receiveDemux = initBuffer 
+    /\ demuxSend = initBuffer
+    /\ demuxProcess = initBuffer
+    /\ processDemux = initBuffer
+    /\ demuxSchedule = initBuffer
+    /\ scheduleDemux = initBuffer
+    /\ peerIncoming = [peerID \in PeerIDs |-> initBuffer]
+    /\ peerOutgoing = [peerID \in PeerIDs |-> initBuffer]
     /\ peerTurn \in PeerIDs
 
 (* 
@@ -85,7 +144,7 @@ HandleDemuxProcess -- processor.go (handle(), lines 102-164)
 Process routine handle for the message sent from the demux routine on the demuxProcess buffer
     - enabled if:
         * demuxProcess is not empty
-        * processDemux is not full
+        * processDemux is ready
     - check the message at the head of demuxProcess:
         * if it is "scBlockReceived", "scFinishedEv", or "scPeerError", 
           then do not send anything back to the demux routine
@@ -95,18 +154,16 @@ Process routine handle for the message sent from the demux routine on the demuxP
 *)
 HandleDemuxProcess ==
     /\ ~Empty(demuxProcess)
-    /\ ~Full(processDemux)
+    /\ Ready(processDemux)
     
-    /\ \/ /\ Head(demuxProcess) \in {"scBlockReceived", "scFinishedEv", "scPeerError"} 
-          /\ UNCHANGED processDemux
-       \/ /\ Head(demuxProcess) = "rProcessBlock"
-          \* non-deterministic assignment
-          /\ processDemux' \in {processDemux, \* either nothing is sent 
-                                Append(processDemux, "pcBlockProcessed"), \* or a "pcBlockProcessed" is sent
-                                Append(processDemux, "pcBlockVerificationFailure")} \* or a "pcBlockVerificationFailure" is sent   
-    /\ demuxProcess' = Tail(demuxProcess)
+    /\ \/ /\ GetMessage(demuxProcess) \in {"scBlockReceived", "scFinishedEv", "scPeerError"} 
+          /\ processDemux' \in RoutineSend(processDemux, {noMsg})
+       \/ /\ GetMessage(demuxProcess) = "rProcessBlock"
+          /\ processDemux' \in RoutineSend(processDemux, {noMsg, "pcBlockProcessed", "pcBlockVerificationFailure"})   
+    
+    /\ demuxProcess' = [demuxProcess EXCEPT !.queue = Tail(@)]
     /\ UNCHANGED <<receiveDemux, demuxSend, demuxSchedule, scheduleDemux>>
-    /\ UNCHANGED <<peers, peerTurn>>
+    /\ UNCHANGED peer
     
 
 (*
@@ -114,7 +171,7 @@ HandleDemuxSchedule -- scheduler.go (handle(), lines 663-695)
 Schedule routine handle for the message sent from the demux routine on the demuxSchedule buffer
     - enabled if:
         * demuxSchedule is not empty
-        * scheduleDemux is not full
+        * scheduleDemux is ready
     - check the message at the head of demuxSchedule:
         * if it is "bcAddNewPeer",      (handleAddNewPeer(), lines 579-585)
           then either do not send anything to the demux routine or send a "scSchedulerFail"
@@ -135,61 +192,53 @@ Schedule routine handle for the message sent from the demux routine on the demux
 *)
 HandleDemuxSchedule ==
     /\ ~Empty(demuxSchedule)
-    /\ ~Full(scheduleDemux)
+    /\ Ready(scheduleDemux)
 
-    /\ \/ /\ Head(demuxSchedule) = "bcAddNewPeer"
-          /\ scheduleDemux' \in {scheduleDemux, \* either nothing is sent 
-                                 Append(scheduleDemux, "scSchedulerFail")} \* or a "scSchedulerFail" is sent 
+    /\ \/ /\ GetMessage(demuxSchedule) = "bcAddNewPeer"
+          /\ scheduleDemux' \in RoutineSend(scheduleDemux, {noMsg, "scSchedulerFail"}) 
        
-       \/ /\ Head(demuxSchedule) = "bcBlockResponse"
-          /\ scheduleDemux' \in {scheduleDemux, \* either nothing is sent
-                                 Append(scheduleDemux, "scBlockReceived"), \* or a "scBlockReceived" is sent
-                                 Append(scheduleDemux, "scPeerError")} \* or a "scPeerError" is sent
+       \/ /\ GetMessage(demuxSchedule) = "bcBlockResponse"
+          /\ scheduleDemux' \in RoutineSend(scheduleDemux, {noMsg, "scBlockReceived", "scPeerError"})  
        
-       \/ /\ Head(demuxSchedule) = "bcNoBlockResponse"
-          /\ scheduleDemux' \in {scheduleDemux, \* either nothing is sent
-                                 Append(scheduleDemux, "scPeerError")} \* or a "scPeerError" is sent
+       \/ /\ GetMessage(demuxSchedule) = "bcNoBlockResponse"
+          /\ scheduleDemux' \in RoutineSend(scheduleDemux, {noMsg, "scPeerError"}) 
        
-       \/ /\ Head(demuxSchedule) = "bcRemovePeer"
-          /\ scheduleDemux' \in {scheduleDemux, \* either nothing is sent
-                                 Append(scheduleDemux, "scSchedulerFail"), \* or a "scSchedulerFail" is sent
-                                 Append(scheduleDemux, "scPeerError")} \* or a "scPeerError" is sent
+       \/ /\ GetMessage(demuxSchedule) = "bcRemovePeer"
+          /\ scheduleDemux' \in RoutineSend(scheduleDemux, {noMsg, "scSchedulerFail", "scPeerError"})
        
-       \/ /\ Head(demuxSchedule) = "bcStatusResponse"
-          /\ scheduleDemux' \in {scheduleDemux, \* either nothing is sent 
-                                 Append(scheduleDemux, "scPeerError")} \* or a "scPeerError" is sent
+       \/ /\ GetMessage(demuxSchedule) = "bcStatusResponse"
+          /\ scheduleDemux' \in RoutineSend(scheduleDemux, {noMsg, "scPeerError"})  
        
-       \/ /\ Head(demuxSchedule) = "pcBlockProcessed"
-          /\ scheduleDemux' \in {scheduleDemux, \* either nothing is sent
-                                 Append(scheduleDemux, "scSchedulerFail"), \* or a "scSchedulerFail" is sent
-                                 Append(scheduleDemux, "scFinishedEv")} \* or a "scFinishedEv" is sent
+       \/ /\ GetMessage(demuxSchedule) = "pcBlockProcessed"
+          /\ scheduleDemux' \in RoutineSend(scheduleDemux, {noMsg, "scSchedulerFail", "scFinishedEv"}) 
        
-       \/ /\ Head(demuxSchedule) = "pcBlockVerificationFailure"
-          /\ scheduleDemux' \in {scheduleDemux, \* either nothing is sent
-                                 Append(scheduleDemux, "scFinishedEv")} \* or a "scFinishedEv" is sent   
-    /\ demuxSchedule' = Tail(demuxSchedule)
+       \/ /\ GetMessage(demuxSchedule) = "pcBlockVerificationFailure"
+          /\ scheduleDemux' \in RoutineSend(scheduleDemux, {noMsg, "scFinishedEv"})
+
+    /\ demuxSchedule' = [demuxSchedule EXCEPT !.queue = Tail(@)] 
     /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, processDemux>>
-    /\ UNCHANGED <<peers, peerTurn>>
+    /\ UNCHANGED peer
     
 (* 
 HandlePeerReceive -- reactor.go (Receive(), AddPeer(), RemovePeer()) 
 Receive routine handle for the peer message received from the current peer
    - enabled if:
         * the buffer of the current peer is not empty
-        * the receiveDemux buffer is not full
+        * the receiveDemux buffer is ready
    - add the message to the receiveDemux buffer
    - remove the message from the buffer of the current peer
    - pick a new current peer. This peer will be sent the next block request message
      by the send routine 
 *)    
 HandlePeerReceive == 
-    /\ ~Empty(peers[peerTurn])  
-    /\ ~Full(receiveDemux)
+    /\ ~Empty(peerOutgoing[peerTurn])  
+    /\ Ready(receiveDemux)
     
-    /\ receiveDemux' = Append(receiveDemux, Head(peers[peerTurn]))
-    /\ peers' = [peers EXCEPT ![peerTurn] = Tail(peers[peerTurn])]
+    /\ receiveDemux' \in RoutineSend(receiveDemux, {GetMessage(peerOutgoing[peerTurn])})
+    /\ peerOutgoing' = [peerOutgoing EXCEPT ![peerTurn].queue = Tail(peerOutgoing[peerTurn].queue)]
     /\ peerTurn' \in PeerIDs
-    /\ UNCHANGED <<demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux>>    
+    /\ UNCHANGED <<demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux>>
+    /\ UNCHANGED <<peerIncoming>>    
     
   
 (*
@@ -197,36 +246,36 @@ HandleReceiveDemux -- reactor.go (demux(), line 332 - 339)
 Demux routine handle for the message at the head of the receiveDemux buffer
     - enabled if 
         * receiveDemux is not empty 
-        * demuxSchedule is not full
+        * demuxSchedule is ready
     - add the message to the demuxSchedule buffer
     - remove the message from the receiveDemux buffer
 *)    
 HandleReceiveDemux == 
     /\ ~Empty(receiveDemux)
-    /\ ~Full(demuxSchedule)
+    /\ Ready(demuxSchedule)
     
-    /\ demuxSchedule' = Append(demuxSchedule, Head(receiveDemux))
-    /\ receiveDemux' = Tail(receiveDemux)
+    /\ demuxSchedule' \in RoutineSend(demuxSchedule, {GetMessage(receiveDemux)})
+    /\ receiveDemux' = [receiveDemux EXCEPT !.queue = Tail(@)]
     /\ UNCHANGED <<demuxSend, demuxProcess, processDemux, scheduleDemux>>
-    /\ UNCHANGED <<peers, peerTurn>> 
+    /\ UNCHANGED peer 
 
 (*
 HandleProcessDemux -- reactor.go (demux(), line 357 - 373)
 Demux routine handle for the message at the head of the processDemux buffer
     - enabled if:
         * processDemux is not empty
-        * demuxSchedule is not full
+        * demuxSchedule is ready
     - add the message to the demuxSchedule buffer
     - remove the message from the processDemux buffer 
 *)
 HandleProcessDemux ==
     /\ ~Empty(processDemux)
-    /\ ~Full(demuxSchedule)
+    /\ Ready(demuxSchedule)
     
-    /\ demuxSchedule' = Append(demuxSchedule, Head(processDemux))
-    /\ processDemux' = Tail(processDemux)
+    /\ demuxSchedule' \in RoutineSend(demuxSchedule, {GetMessage(processDemux)})
+    /\ processDemux' = [processDemux EXCEPT !.queue = Tail(@)]
     /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, scheduleDemux>>
-    /\ UNCHANGED <<peers, peerTurn>>
+    /\ UNCHANGED peer
 
 (*
 HandleScheduleDemux -- reactor.go (demux(), line 342 - 354)
@@ -234,91 +283,94 @@ Demux routine handle for the message at the head of the scheduleDemux buffer
     - enabled if:
         * scheduleDemux is not empty
         * either the message at the head of scheduleDemux is "scBlockReceived", "scFinishedEv" or "scPeerError"
-          and processDemux is not full
-        * or the message at the head of scheduleDemux is "scBlockRequest" and demuxSend is not full      
+          and processDemux is ready
+        * or the message at the head of scheduleDemux is "scBlockRequest" and demuxSend is ready      
     - add the message to the appropriate buffer
     - remove the message from the scheduleDemux buffer 
 *)
 HandleScheduleDemux ==
     /\ ~Empty(scheduleDemux)
     
-    /\ \/ /\ ~Full(demuxProcess)
-          /\ Head(scheduleDemux) \in {"scBlockReceived", "scFinishedEv", "scPeerError"}
-          /\ demuxProcess' = Append(demuxProcess, Head(scheduleDemux))
+    /\ \/ /\ Ready(demuxProcess)
+          /\ GetMessage(scheduleDemux) \in {"scBlockReceived", "scFinishedEv", "scPeerError"}
+          /\ demuxProcess' \in RoutineSend(demuxProcess, {GetMessage(scheduleDemux)})
           /\ UNCHANGED demuxSend
             
-       \/ /\ ~Full(demuxSend)
-          /\ Head(scheduleDemux) = "scBlockRequest"
-          /\ demuxSend' = Append(demuxSend, Head(scheduleDemux))
+       \/ /\ Ready(demuxSend)
+          /\ GetMessage(scheduleDemux) = "scBlockRequest"
+          /\ demuxSend' \in RoutineSend(demuxSend, {GetMessage(scheduleDemux)})
           /\ UNCHANGED processDemux
           
-    /\ scheduleDemux' = Tail(scheduleDemux)
+    /\ scheduleDemux' = [scheduleDemux EXCEPT !.queue = Tail(@)]
     /\ UNCHANGED <<receiveDemux, processDemux, demuxSchedule>>
-    /\ UNCHANGED <<peers, peerTurn>>
+    /\ UNCHANGED peer
 
 (*
 HandleDemuxSend -- ?.go (?, lines ?-?)
 Send routine handle for the message at the head of the demuxSend buffer
     - enabled if:
         * demuxSend is not empty
-        * the buffer of the current peer is not full       
+        * the buffer of the current peer is ready
     - add the message to the buffer of the current peer
     - remove the message from the demuxSend buffer 
 *)    
 HandleDemuxSend ==
     /\ ~Empty(demuxSend)
-    /\ ~Full(peers[peerTurn])
+    /\ Ready(peerIncoming[peerTurn])
     
-    /\ peers' = [peers EXCEPT ![peerTurn] = Append(peers[peerTurn], "bcBlockResponse")]
+    /\ peerIncoming' \in PeerSend(peerIncoming, peerTurn, {GetMessage(demuxSend)})
     /\ peerTurn' \in PeerIDs
-    /\ demuxSend' = Tail(demuxSend)
+    /\ demuxSend' \in [demuxSend EXCEPT !.queue = Tail(@)]
     /\ UNCHANGED <<receiveDemux, demuxProcess, processDemux, demuxSchedule, scheduleDemux>>
-    
+    /\ UNCHANGED peerOutgoing
 
 (*
 BroadcastStatusRequest -- ?.go (?, lines ?-?)
 Demux routine action for broadcasting a status request message 
     - enabled if:
-        * the buffers of all peers are not full
+        * the buffers of all peers are ready
     - add the "bcStatusRequest" message to the buffers of all peers
 *)    
 BroadcastStatusRequest == 
-    /\ \A peerID \in PeerIDs : ~Full(peers[peerID])
+    /\ \A peerID \in PeerIDs : Ready(peerIncoming[peerID])
     
-    \* we assume that the peer immediately receives the request and adds a "bcStatusResponse" in its buffer
-    /\ peers' = [peerID \in PeerIDs |-> Append(peers[peerID], "bcStatusResponse")]    
+    /\ peerIncoming' = PeerBroadcast(peerIncoming, "bcStatusRequest")     
     /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux>>
-    /\ UNCHANGED <<peerTurn>>
+    /\ UNCHANGED <<peerOutgoing, peerTurn>>
 
 (*
 SendRProcessBlock -- ?.go (?, lines ?-?)
 Demux routine action for sending a "rProcessBlock" message to the process routine
     - enabled if:
-        * demuxProcess is not full
+        * demuxProcess is ready
     - add the "rProcessBlock" message to the demuxProcess buffer
 *)        
 SendRProcessBlock ==
-    /\ ~Full(demuxProcess)
+    /\ Ready(demuxProcess)
     
-    /\ demuxProcess' = Append(demuxProcess, "rProcessBlock")
+    /\ demuxProcess' \in RoutineSend(demuxProcess, {"rProcessBlock"}) 
     /\ UNCHANGED <<receiveDemux, demuxSend, processDemux, demuxSchedule, scheduleDemux>>
-    /\ UNCHANGED <<peers, peerTurn>>
+    /\ UNCHANGED peer
 
 (*
 SendPeerMsgs -- ?.go (?, lines ?-?)
 Peer action for non-deterministically sending messages to the receive routine
-    - enabled if: 
-        * the buffer of the current peer is not full
-    - add one of the peer messages "bcAddNewPeer", "bcNoBlockResponse", "bcRemovePeer", "bcStatusResponse"
+    - enabled if:
+        * the incoming buffer of the current peer is not empty  
+        * the outgoing buffer of the current peer is ready
+    - if the message at the head of the incoming buffer is status/block request, send a status/block response
+    - otherwise, add one of the peer messages "bcAddNewPeer", "bcNoBlockResponse", "bcRemovePeer", "bcStatusResponse"
       to the buffer of the current peer
 *)
 SendPeerMsgs ==
-    /\ ~Full(peers[peerTurn])
-    
-    /\ peers' \in {[peers EXCEPT ![peerTurn] = Append(peers[peerTurn], "bcAddNewPeer")],
-                   [peers EXCEPT ![peerTurn] = Append(peers[peerTurn], "bcNoBlockResponse")],
-                   [peers EXCEPT ![peerTurn] = Append(peers[peerTurn], "bcRemovePeer")],
-                   [peers EXCEPT ![peerTurn] = Append(peers[peerTurn], "bcStatusResponse")]} 
+    /\ ~Empty(peerIncoming[peerTurn])
+    /\ Ready(peerOutgoing[peerTurn])
+    /\ \/ /\ GetMessage(peerIncoming[peerTurn]) = "bcStatusRequest"
+          /\ peerOutgoing' \in PeerSend(peerOutgoing, peerTurn, {"bcStatusResponse"})
+       \/ /\ GetMessage(peerIncoming[peerTurn]) = "scBlockRequest"
+          /\ peerOutgoing' \in PeerSend(peerOutgoing, peerTurn, {"bcBlockResponse"})
+       \/ /\ peerOutgoing' \in PeerSend(peerOutgoing, peerTurn, peerMsgs)
+    /\ peerIncoming' = [peerIncoming EXCEPT ![peerTurn].queue = Tail(peerIncoming[peerTurn].queue)]  
     /\ peerTurn' \in PeerIDs
     /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux>>
 
@@ -404,7 +456,24 @@ Peer ==
     \* do nothing 
     \/ /\ UNCHANGED buffers
        /\ UNCHANGED peer
-       
+
+Buffer ==
+    \/ /\ receiveDemux' = BufRcv(receiveDemux)
+       /\ UNCHANGED <<demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux, peerIncoming, peerOutgoing, peerTurn>>
+    \/ /\ demuxSend' = BufRcv(demuxSend)
+       /\ UNCHANGED <<receiveDemux, demuxProcess, processDemux, demuxSchedule, scheduleDemux, peerIncoming, peerOutgoing, peerTurn>>
+    \/ /\ demuxProcess' = BufRcv(demuxProcess)
+       /\ UNCHANGED <<receiveDemux, demuxSend, processDemux, demuxSchedule, scheduleDemux, peerIncoming, peerOutgoing, peerTurn>>
+    \/ /\ processDemux' = BufRcv(processDemux)
+       /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, demuxSchedule, scheduleDemux, peerIncoming, peerOutgoing, peerTurn>>
+    \/ /\ demuxSchedule' = BufRcv(demuxSchedule)
+       /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, processDemux, scheduleDemux, peerIncoming, peerOutgoing, peerTurn>>
+    \/ /\ scheduleDemux' = BufRcv(scheduleDemux)
+       /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, processDemux, demuxSchedule, peerIncoming, peerOutgoing, peerTurn>>   
+    \/ /\ \E peerID \in PeerIDs : peerIncoming' = [peerIncoming EXCEPT ![peerID] = BufRcv(@)]
+       /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux, peerOutgoing, peerTurn>>
+    \/ /\ \E peerID \in PeerIDs : peerOutgoing' = [peerOutgoing EXCEPT ![peerID] = BufRcv(@)]
+       /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux, peerIncoming, peerTurn>>       
         
 Next ==
     /\ \/ /\ turn = "receiveRoutine"
@@ -419,54 +488,38 @@ Next ==
           /\ SendRoutine
        \/ /\ turn = "peer"
           /\ Peer
+       \/ /\ turn = "buffer"
+          /\ Buffer 
     /\ turn' \in Turns  
 
-Fairness ==
-    /\ WF_vars(Next)
+Fairness == 
+    WF_vars(Buffer)
+
+Spec == Init /\ [][Next]_vars /\ Fairness
+
+GoodState ==
+    \/ ~Empty(receiveDemux) => Ready(demuxSchedule)
+    \/ ~Empty(processDemux) => Ready(demuxSchedule)
+    \/ /\ ~Empty(scheduleDemux) 
+       /\ GetMessage(scheduleDemux) \in {"scBlockReceived", "scFinishedEv", "scPeerError"}  
+                 => Ready(demuxProcess)
+    \/ /\ ~Empty(scheduleDemux) 
+       /\ GetMessage(scheduleDemux) = "scBlockRequest"   
+                 => Ready(demuxSend)                          
+    \/ Ready(demuxProcess)
+    \/ \A peerID \in PeerIDs: Ready(peerIncoming[peerID])
     
-Spec == Init /\ [][Next]_vars /\ Fairness    
-
- 
-GoodStateSchedule ==
-    ~Empty(demuxSchedule) => ~Full(scheduleDemux)  
-
-\*BadStateSchedule ==
-\*    ~Empty(demuxSchedule) /\ Full(scheduleDemux)
-
+    \/ ~Empty(demuxProcess) => Ready(processDemux)    
     
-GoodStateProcess ==
-    ~Empty(demuxProcess) => ~Full(processDemux)    
-
-\*BadStateProcess==
-\*    ~Empty(demuxProcess) /\ Full(processDemux)
-
-
-GoodStateReceive ==
-    ~Empty(peers[peerTurn]) => ~Full(receiveDemux)
-
-\*BadStateReceive==
-\*    ~Empty(peers[peerTurn]) /\ Full(receiveDemux)
-
+    \/ ~Empty(demuxSchedule) => Ready(scheduleDemux)
     
-GoodStateSend ==
-    ~Empty(demuxSend) => ~Full(peers[peerTurn])
-
-\*BadStateSend==
-\*    ~Empty(demuxSend) /\ Full(peers[peerTurn])
+    \/ ~Empty(demuxSend) => Ready(peerIncoming[peerTurn])
     
+    \/ \A peerID \in PeerIDs: ~Empty(peerIncoming[peerID]) => Ready(peerOutgoing[peerID])
     
-GoodStateDemux ==
-    \/ ~Empty(processDemux) => ~Full(demuxSchedule)
-    \/ ~Empty(receiveDemux) => ~Full(demuxSchedule)
-    \/ ~Empty(scheduleDemux) => /\ Head(scheduleDemux) \in {"scBlockReceived", "scFinishedEv", "scPeerError"} 
-                                /\ ~Full(demuxProcess)
-    \/ ~Empty(scheduleDemux) => /\ Head(scheduleDemux) = "scBlockRequest"  
-                                /\ ~Full(demuxSend)
-    \/ \A peerID \in PeerIDs: ~Full(peers[peerID])
-    \/ ~Full(demuxProcess)
-    
-
+    \/ ~Empty(peerOutgoing[peerTurn]) => Ready(receiveDemux)
+        
 =============================================================================
 \* Modification History
-\* Last modified Fri Feb 07 17:26:02 CET 2020 by ilina
+\* Last modified Mon Feb 17 18:01:28 CET 2020 by ilina
 \* Created Wed Feb 05 15:44:25 CET 2020 by ilina
