@@ -16,7 +16,7 @@ VARIABLES turn, \* which routine is taking a step
           demuxSchedule, \* the buffer from the demux routine to the schedule routine
           scheduleDemux, \* the buffer from the scheudle routine to the demux routine
           peerIncoming, \* the buffers incoming to the peers
-          peerOutgoing, \* the buffers incoming from the peers
+          peerOutgoing, \* the buffers outgoing from the peers
           peerTurn \* the current peer that receives a block request and sends a block response
 
 \* set of peers
@@ -56,10 +56,13 @@ noMsg == "noMsg"
 Msgs == peerMsgs \cup demuxSendMsgs \cup demuxProcessMsgs \cup processDemuxMsgs \cup demuxScheduleMsgs \cup scheduleDemuxMsgs \cup demuxPeerMsgs \cup {noMsg}
  
 \* set of turns used to schedule the different routines
-Turns == {"receiveRoutine", "demuxRoutine", "sendRoutine", "processRoutine", "scheduleRoutine", "peer", "buffer"} 
+Turns == {"receiveRoutine", "demuxRoutine", "sendRoutine", "processRoutine", "scheduleRoutine", "peer"} 
 
-\* useful buffer predicates/actions  
-\* a buffer is full if the length of its queue is greater or equal to QueueLength      
+(* Useful buffer predicates/actions. A buffer is a record: 
+   buffer \in [inMsg : Msgs, queue : Seq(Msgs)] 
+*) 
+
+\* a buffer is full if the length of its queue is greater or equal to QueueLength    
 Full(buffer) ==
     Len(buffer.queue) >= QueueLength
     
@@ -93,11 +96,7 @@ PeerBroadcast(buffer, msg) ==
  
 \* internal buffer receive: add the inMsg to the queue 
 BufRcv(buffer) ==
-    IF /\ ~Ready(buffer)
-       /\ ~Full(buffer)
-       /\ buffer.inMsg /= noMsg
-    THEN [buffer EXCEPT !.queue = Append(buffer.queue, buffer.inMsg), !.inMsg = noMsg]
-    ELSE buffer     
+    [buffer EXCEPT !.queue = Append(buffer.queue, buffer.inMsg), !.inMsg = noMsg]     
     
 
 \* initial value of each buffer: the queue is empty, the inMsg is noMsg
@@ -117,6 +116,7 @@ TypeOK ==
     /\ \A peerID \in PeerIDs : peerOutgoing[peerID] \in [inMsg : peerMsgs \cup {noMsg}, queue : Seq(peerMsgs)]
     /\ peerTurn \in PeerIDs
 
+\* initial state predicate
 Init ==
     /\ turn \in Turns \* starting in any routine 
     /\ receiveDemux = initBuffer 
@@ -458,23 +458,41 @@ Peer ==
        /\ UNCHANGED peer
 
 Buffer ==
-    \/ /\ receiveDemux' = BufRcv(receiveDemux)
+    \/ /\ ~Ready(receiveDemux)
+       /\ ~Full(receiveDemux)
+       /\ receiveDemux' = BufRcv(receiveDemux)
        /\ UNCHANGED <<demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux, peerIncoming, peerOutgoing, peerTurn>>
-    \/ /\ demuxSend' = BufRcv(demuxSend)
+    \/ /\ ~Ready(demuxSend)
+       /\ ~Full(demuxSend)
+       /\ demuxSend' = BufRcv(demuxSend)
        /\ UNCHANGED <<receiveDemux, demuxProcess, processDemux, demuxSchedule, scheduleDemux, peerIncoming, peerOutgoing, peerTurn>>
-    \/ /\ demuxProcess' = BufRcv(demuxProcess)
+    \/ /\ ~Ready(demuxProcess)
+       /\ ~Full(demuxProcess)
+       /\ demuxProcess' = BufRcv(demuxProcess)
        /\ UNCHANGED <<receiveDemux, demuxSend, processDemux, demuxSchedule, scheduleDemux, peerIncoming, peerOutgoing, peerTurn>>
-    \/ /\ processDemux' = BufRcv(processDemux)
+    \/ /\ ~Ready(processDemux)
+       /\ ~Full(processDemux)
+       /\ processDemux' = BufRcv(processDemux)
        /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, demuxSchedule, scheduleDemux, peerIncoming, peerOutgoing, peerTurn>>
-    \/ /\ demuxSchedule' = BufRcv(demuxSchedule)
+    \/ /\ ~Ready(demuxSchedule)
+       /\ ~Full(demuxSchedule)
+       /\ demuxSchedule' = BufRcv(demuxSchedule)
        /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, processDemux, scheduleDemux, peerIncoming, peerOutgoing, peerTurn>>
-    \/ /\ scheduleDemux' = BufRcv(scheduleDemux)
+    \/ /\ ~Ready(scheduleDemux)
+       /\ ~Full(scheduleDemux)
+       /\ scheduleDemux' = BufRcv(scheduleDemux)
        /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, processDemux, demuxSchedule, peerIncoming, peerOutgoing, peerTurn>>   
-    \/ /\ \E peerID \in PeerIDs : peerIncoming' = [peerIncoming EXCEPT ![peerID] = BufRcv(@)]
+    \/ /\ \E peerID \in PeerIDs : /\ ~Ready(peerIncoming[peerID])
+                                  /\ ~Full(peerIncoming[peerID])
+                                  /\ peerIncoming' = [peerIncoming EXCEPT ![peerID] = BufRcv(@)]
        /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux, peerOutgoing, peerTurn>>
-    \/ /\ \E peerID \in PeerIDs : peerOutgoing' = [peerOutgoing EXCEPT ![peerID] = BufRcv(@)]
+    \/ /\ \E peerID \in PeerIDs : /\ ~Ready(peerOutgoing[peerID])
+                                  /\ ~Full(peerOutgoing[peerID])
+                                  /\ peerOutgoing' = [peerOutgoing EXCEPT ![peerID] = BufRcv(@)]
        /\ UNCHANGED <<receiveDemux, demuxSend, demuxProcess, processDemux, demuxSchedule, scheduleDemux, peerIncoming, peerTurn>>       
-        
+    
+       
+     
 Next ==
     /\ \/ /\ turn = "receiveRoutine"
           /\ ReceiveRoutine
@@ -488,14 +506,14 @@ Next ==
           /\ SendRoutine
        \/ /\ turn = "peer"
           /\ Peer
-       \/ /\ turn = "buffer"
-          /\ Buffer 
+       \/ Buffer 
     /\ turn' \in Turns  
 
 Fairness == 
-    WF_vars(Buffer)
+    /\ WF_vars(Buffer)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
+  
 
 GoodState ==
     \/ ~Empty(receiveDemux) => Ready(demuxSchedule)
@@ -521,5 +539,5 @@ GoodState ==
         
 =============================================================================
 \* Modification History
-\* Last modified Mon Feb 17 18:01:28 CET 2020 by ilina
+\* Last modified Tue Feb 18 18:07:27 CET 2020 by ilina
 \* Created Wed Feb 05 15:44:25 CET 2020 by ilina
