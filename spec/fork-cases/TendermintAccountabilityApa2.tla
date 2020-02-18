@@ -13,7 +13,7 @@ CONSTANTS
 
 N == 4 \* the total number of processes: correct and faulty
 T == 1 \* an upper bound on the number of Byzantine processes
-F == 2 \* the number of Byzantine processes
+F == 1 \* the number of Byzantine processes
 NFaultyProposals == 0   \* the number of injected faulty PROPOSE messages
 NFaultyPrevotes == 6    \* the number of injected faulty PREVOTE messages
 NFaultyPrecommits == 6  \* the number of injected faulty PRECOMMIT messages
@@ -303,10 +303,17 @@ TypeOK ==
     /\ BenignRoundsInMessages(msgsPrecommit)
     /\ evidence \in SUBSET (AllProposals \union AllPrevotes \union AllPrecommits)
 
-NoFutureMessagesSent(p) ==
+NoFutureMessagesForLargerRounds(p) ==
+  \* a correct process does not send messages for the later rounds
+  \A r \in { rr \in Rounds: rr > round[p] }:
+    /\ \A m \in msgsPropose[r]: m.src /= p
+    /\ \A m \in msgsPrevote[r]: m.src /= p
+    /\ \A m \in msgsPrecommit[r]: m.src /= p
+
+NoFutureMessagesForCurrentRound(p) ==
   \* a correct process does not send messages in the future
-  \A r \in { rr \in Rounds: rr >= round[p] }:
-    /\ step[p] /= "PROPOSE" \/ \A m \in msgsPropose[r]: m.src /= p
+  LET r == round[p] IN
+    /\ Proposer(r) = p \/ \A m \in msgsPropose[r]: m.src /= p
     /\ \/ step[p] \in {"PREVOTE", "PRECOMMIT", "DECIDED"}
        \/ \A m \in msgsPrevote[r]: m.src /= p
     /\ \/ step[p] \in {"PRECOMMIT", "DECIDED"}
@@ -314,7 +321,8 @@ NoFutureMessagesSent(p) ==
           
 AllNoFutureMessagesSent ==
   \A p \in Corr:
-    NoFutureMessagesSent(p)                 
+    /\ NoFutureMessagesForCurrentRound(p)                 
+    /\ NoFutureMessagesForLargerRounds(p)
 
 IfInPrevoteThenSentPrevote(p) ==
   step[p] = "PREVOTE" =>
@@ -484,6 +492,20 @@ AllNoEquivocationByCorrect ==
     /\ ProposalsByProposer(r, msgsPropose)    
     /\ NoEquivocationByCorrect(r, msgsPrevote)    
     /\ NoEquivocationByCorrect(r, msgsPrecommit)    
+
+\* construct the set of the message senders
+Senders(M) == { m.src: m \in M }
+
+\* an invariant by Josef:
+\* if T + 1 processes precommit on the same value in a round,
+\* then in the future rounds there are less than 2T + 1 prevotes for another value
+PrecommitsLockValue ==
+  \A r \in Rounds:
+    \A v \in ValidValues \union {NilValue}:
+      \/ Cardinality(Senders({m \in msgsPrecommit[r]: m.id = v})) < T + 1
+      \/ \A fr \in { rr \in Rounds: rr > r }:  \* future rounds
+           \A w \in (Values \union {NilValue}) \ {v}:
+            Cardinality(Senders({m \in msgsPrevote[fr]: m.id = w})) < 2 * T + 1
     
 Inv ==
     /\ TypeOK
@@ -503,6 +525,7 @@ Inv ==
     /\ AllIfSentPrevoteThenReceivedProposalOrTwoThirds
     /\ IfSentPrecommitThenReceivedTwoThirds
     /\ AllNoEquivocationByCorrect
+    /\ PrecommitsLockValue
     
 (******************************** FORK ACCOUNTABILITY  ***************************************)
 NoEquivocation ==
@@ -547,6 +570,7 @@ NoHigherRounds == \A p \in Corr: round[p] < 1
 
 NoDecision == \A p \in Corr: decision[p] = NilValue                    
 
+\* the safety property -- agreement
 Agreement == \A p, q \in Corr:
     \/ decision[p] = NilValue
     \/ decision[q] = NilValue
