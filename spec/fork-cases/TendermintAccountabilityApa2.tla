@@ -36,7 +36,7 @@ THRESHOLD2 == 2 * T + 1
 (* APALACHE *)
 a <: b == a
 
-MT == [type |-> STRING, src |-> Int, round |-> Int,
+MT == [type |-> STRING, src |-> STRING, round |-> Int,
        proposal |-> STRING, validRound |-> Int, id |-> STRING]
        
 AsMsg(m) == m <: MT
