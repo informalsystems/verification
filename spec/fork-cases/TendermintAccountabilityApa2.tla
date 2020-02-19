@@ -1,15 +1,17 @@
 ----------------------------- MODULE TendermintAccountabilityApa2 -----------------------------
 (*
- A TLA+ specification of subset of Tendermint consensus needed to formalize fork accountability 
- protocol. In this version, the faults are injected right in the initial states.
+ A TLA+ specification of subset of Tendermint consensus needed to formalize
+ fork accountability protocol. In this version, the faults are injected right
+ in the initial states.
  
  This is the version for compatibility with Apalache.
+
+ Zarko Milosevic, Igor Konnov, 2019-2020.
  *)
 
 EXTENDS Integers, FiniteSets
 
-CONSTANTS
-    PropFun \* the proposer function
+CONSTANTS PropFun \* the proposer function
 
 N == 4 \* the total number of processes: correct and faulty
 T == 1 \* an upper bound on the number of Byzantine processes
@@ -17,9 +19,9 @@ F == 1 \* the number of Byzantine processes
 NFaultyProposals == 0   \* the number of injected faulty PROPOSE messages
 NFaultyPrevotes == 6    \* the number of injected faulty PREVOTE messages
 NFaultyPrecommits == 6  \* the number of injected faulty PRECOMMIT messages
-Corr == 1..N-F
-Faulty == N-F+1..N
-AllProcs == 1..N
+Corr == {"c1", "c2", "c3"}  \* 1..N-F
+Faulty == {"f1"}            \* N-F+1..N
+AllProcs == Corr \cup Faulty
 Rounds == 0..2  \* the set of possible rounds, give a bit more freedom to the solver
 ValidValues == {"0", "1"}     \* e.g., picked by a correct process, or a faulty one
 InvalidValues == {"2"}    \* e.g., sent by a Byzantine process
@@ -41,10 +43,8 @@ AsMsg(m) == m <: MT
 SetOfMsgs(S) == S <: {MT}       
 EmptyMsgSet == SetOfMsgs({})
 
-ConstInit ==
-    \* the proposer is arbitrary -- ok for safety 
-    PropFun \in [Rounds -> AllProcs]
-
+\* the proposer is arbitrary -- works for safety 
+ConstInit == PropFun \in [Rounds -> AllProcs]
 (* END-OF-APALACHE *)
 
 
@@ -52,26 +52,31 @@ ConstInit ==
 VARIABLES round, step, decision, lockedValue, lockedRound, validValue, validRound
 
 \* book-keeping variables
-VARIABLES msgsPropose, \* the propose messages broadcasted in the system, a function Heights \X Rounds -> set of messages
-          msgsPrevote, \* the prevote messages broadcasted in the system, a function Heights \X Rounds -> set of messages  
-          msgsPrecommit, \* the precommit messages broadcasted in the system, a function Heights \X Rounds -> set of messages  
-          evidence  \* at every step, evidence contains the messages that were used by the active process
+
+VARIABLES msgsPropose,
+ \* PROPOSE messages broadcasted in the system, a function Rounds -> set of messages
+          msgsPrevote,
+ \* PREVOTE messages broadcasted in the system, a function Rounds -> set of messages
+          msgsPrecommit,
+ \* PRECOMMIT messages broadcasted in the system, a function Rounds -> set of messages  
+          evidence
+  \* at every step, evidence contains the messages that were used by the active process
  
 \* this is needed for UNCHANGED
-vars == <<round, step, decision, lockedValue, lockedRound, validValue,
-          validRound, msgsPropose, msgsPrevote, msgsPrecommit>>
+vars == <<round, step, decision, lockedValue, lockedRound,
+          validValue, validRound, msgsPropose, msgsPrevote, msgsPrecommit>>
 
 \* A function which gives the proposer for a given round at a given height.
-\* Here we use round robin. As Corr and Faulty are assigned non-deterministically,
-\* it does not really matter who starts first.
-\*Proposer(rd) == 1 + ((StartId + rd) % N)
 Proposer(rd) == PropFun[rd]
 
+\* A value hash. The identity is a perfect hash, except it does not shrink the set.
 Id(v) == v
 
+\* The validity predicate
 IsValid(v) == v \in ValidValues
 
-\* Given a set of allowed messages Msgs, this operators produces a function from rounds to sets of messages.
+\* Given a set of allowed messages Msgs, this operator produces a function from
+\* rounds to sets of messages.
 \* Importantly, there will be exactly k messages in the image of msgFun.
 \* We use this action to produce k faults in an initial state.
 ProduceFaults(msgFun, From, k) ==
@@ -259,7 +264,7 @@ Next ==
     \* a safeguard to prevent deadlocks when the algorithm goes to further heights or rounds
     \*\/ UNCHANGED vars
 
-(******************************** INVARIANTS *************************************************)
+(******************************** INVARIANTS *********************************)
 (* first, we define the sets of all potential messages *)
 AllProposals == 
   [type: {"PROPOSAL"},
@@ -304,7 +309,7 @@ TypeOK ==
     /\ evidence \in SUBSET (AllProposals \union AllPrevotes \union AllPrecommits)
 
 NoFutureMessagesForLargerRounds(p) ==
-  \* a correct process does not send messages for the later rounds
+  \* a correct process does not send messages for the future rounds
   \A r \in { rr \in Rounds: rr > round[p] }:
     /\ \A m \in msgsPropose[r]: m.src /= p
     /\ \A m \in msgsPrevote[r]: m.src /= p
@@ -319,11 +324,13 @@ NoFutureMessagesForCurrentRound(p) ==
     /\ \/ step[p] \in {"PRECOMMIT", "DECIDED"}
        \/ \A m \in msgsPrecommit[r]: m.src /= p
           
+\* the correct processes never send future messages
 AllNoFutureMessagesSent ==
   \A p \in Corr:
     /\ NoFutureMessagesForCurrentRound(p)                 
     /\ NoFutureMessagesForLargerRounds(p)
 
+\* a correct process in the PREVOTE state has sent a PREVOTE message
 IfInPrevoteThenSentPrevote(p) ==
   step[p] = "PREVOTE" =>
     \E m \in msgsPrevote[round[p]]:
@@ -333,6 +340,7 @@ IfInPrevoteThenSentPrevote(p) ==
 AllIfInPrevoteThenSentPrevote ==
   \A p \in Corr: IfInPrevoteThenSentPrevote(p)      
 
+\* a correct process in the PRECOMMIT state has sent a PRECOMMIT message
 IfInPrecommitThenSentPrecommit(p) ==
   step[p] = "PRECOMMIT" =>
     \E m \in msgsPrecommit[round[p]]:
@@ -342,12 +350,14 @@ IfInPrecommitThenSentPrecommit(p) ==
 AllIfInPrecommitThenSentPrecommit ==
   \A p \in Corr: IfInPrecommitThenSentPrecommit(p)      
 
+\* a process in the PRECOMMIT state has sent a PRECOMMIT message
 IfInDecidedThenValidDecision(p) ==
   step[p] = "DECIDED" <=> decision[p] \in ValidValues
   
 AllIfInDecidedThenValidDecision ==
   \A p \in Corr: IfInDecidedThenValidDecision(p)  
 
+\* a decided process should have received a proposal on its decision
 IfInDecidedThenReceivedProposal(p) ==
   step[p] = "DECIDED" =>
     \E r \in Rounds: \* r is not necessarily round[p]
@@ -359,6 +369,7 @@ IfInDecidedThenReceivedProposal(p) ==
 AllIfInDecidedThenReceivedProposal ==
   \A p \in Corr: IfInDecidedThenReceivedProposal(p)          
 
+\* a decided process has received two-thirds of precommit messages
 IfInDecidedThenReceivedTwoThirds(p) ==
   step[p] = "DECIDED" =>
     \E r \in Rounds:
@@ -368,12 +379,7 @@ IfInDecidedThenReceivedTwoThirds(p) ==
 AllIfInDecidedThenReceivedTwoThirds ==
   \A p \in Corr: IfInDecidedThenReceivedTwoThirds(p)        
 
-ProposalsNeverSendLargerValidRound ==
-  \A r \in Rounds:
-    \A m \in msgsPropose[r]:
-      \/ m.src \in Faulty
-      \/ m.validRound <= m.round
-
+\* for a round r, there is proposal by the round proposer for a valid round vr
 ProposalInRound(r, proposedVal, vr) ==
   \E m \in msgsPropose[r]:
     /\ m.src = Proposer(r)
@@ -384,6 +390,9 @@ TwoThirdsPrevotes(vr, v) ==
   LET PV == { mm \in msgsPrevote[vr]: mm.id = v } IN
   Cardinality(PV) >= THRESHOLD2
 
+\* if a process sends a PREVOTE, then there are three possibilities:
+\* 1) the process is faulty, 2) the PREVOTE cotains Nil,
+\* 3) there is a proposal in an earlier (valid) round and two thirds of PREVOTES
 IfSentPrevoteThenReceivedProposalOrTwoThirds(r) ==
   \A mpv \in msgsPrevote[r]:
     \/ mpv.src \in Faulty
@@ -400,6 +409,8 @@ AllIfSentPrevoteThenReceivedProposalOrTwoThirds ==
   \A r \in Rounds:
     IfSentPrevoteThenReceivedProposalOrTwoThirds(r)
 
+\* if a correct process has sent a PRECOMMIT, then there are two thirds,
+\* either on a valid value, or a nil value
 IfSentPrecommitThenReceivedTwoThirds ==
   \A r \in Rounds:
     \A mpc \in msgsPrecommit[r]:
@@ -411,12 +422,14 @@ IfSentPrecommitThenReceivedTwoThirds ==
             \/ /\ mpc.id = NilValue
                /\ Cardinality(msgsPrevote[r]) >= THRESHOLD2
 
+\* there is a locked round if a only if there is a locked value
 LockedRoundIffLockedValue(p) ==
   (lockedRound[p] = NilRound) <=> (lockedValue[p] = NilValue)
   
 AllLockedRoundIffLockedValue ==
   \A p \in Corr: LockedRoundIffLockedValue(p)
             
+\* when a process locked a round, it should have seen a precommit on a locked value
 IfLockedRoundThenSentCommit(p) ==
   lockedRound[p] /= NilRound
     => \E r \in { rr \in Rounds: rr <= round[p] }:
@@ -426,6 +439,7 @@ IfLockedRoundThenSentCommit(p) ==
 AllIfLockedRoundThenSentCommit ==
   \A p \in Corr: IfLockedRoundThenSentCommit(p)
          
+\* a process always locks the latest round, for which it has sent a PRECOMMIT
 LatestPrecommitHasLockedRound(p) ==
   LET pPrecommits == {mm \in UNION { msgsPrecommit[r]: r \in Rounds }: mm.src = p } IN
   pPrecommits /= {} <: {MT}
@@ -441,12 +455,9 @@ AllLatestPrecommitHasLockedRound ==
   \A p \in Corr:
     LatestPrecommitHasLockedRound(p)
     
+\* NOT USED?
 ValidRoundNotSmallerThanLockedRound(p) ==
   validRound[p] >= lockedRound[p]
-  
-AllValidRoundNotSmallerThanLockedRound ==
-  \A p \in Corr:
-    ValidRoundNotSmallerThanLockedRound(p)
 
 ValidRoundIffValidValue(p) ==
   (validRound[p] = NilRound) <=> (validValue[p] = NilValue)
@@ -454,6 +465,7 @@ ValidRoundIffValidValue(p) ==
 AllValidRoundIffValidValue ==
   \A p \in Corr: ValidRoundIffValidValue(p)
 
+\* if validRound is defined, then there are two-thirds of PREVOTEs
 IfValidRoundThenTwoThirds(p) ==
   \/ validRound[p] = NilRound
   \/ LET PV == { m \in msgsPrevote[validRound[p]]: m.id = validValue[p] } IN
@@ -462,6 +474,7 @@ IfValidRoundThenTwoThirds(p) ==
 AllIfValidRoundThenTwoThirds ==
   \A p \in Corr: IfValidRoundThenTwoThirds(p)     
 
+\* a valid round can be only set to a valid value that was proposed earlier
 IfValidRoundThenProposal(p) ==
   \/ validRound[p] = NilRound
   \/ \E m \in msgsPropose[validRound[p]]:
@@ -470,16 +483,17 @@ IfValidRoundThenProposal(p) ==
 AllIfValidRoundThenProposal ==
   \A p \in Corr: IfValidRoundThenProposal(p)
 
+\* Every correct process sends only one value or NilValue.
+\* This test has quantifier alternation -- a threat to all decision procedures.
+\* Luckily, the sets Corr and ValidValues are small.
 NoEquivocationByCorrect(r, msgs) ==
-  \* Every correct process sends only one value or NilValue.
-  \* This test has quantifier alternation -- a threat for all decision procedures.
-  \* Luckily, the sets Corr and ValidValues are small.
   \A p \in Corr:
     \E v \in ValidValues \cup {NilValue}:
       \A m \in msgs[r]:
         \/ m.src /= p
         \/ m.id = v
 
+\* a proposer nevers sends two values
 ProposalsByProposer(r, msgs) ==
   \* if the proposer is not faulty, it sends only one value
   \E v \in ValidValues:
@@ -496,19 +510,18 @@ AllNoEquivocationByCorrect ==
 \* construct the set of the message senders
 Senders(M) == { m.src: m \in M }
 
-\* an invariant by Josef:
+\* The final piece by Josef Widder:
 \* if T + 1 processes precommit on the same value in a round,
 \* then in the future rounds there are less than 2T + 1 prevotes for another value
 PrecommitsLockValue ==
   \A r \in Rounds:
     \A v \in ValidValues \union {NilValue}:
-      \/ Cardinality(Senders({m \in msgsPrecommit[r]: m.id = v})) < T + 1
+      \/ Cardinality(Senders({m \in msgsPrecommit[r]: m.id = v})) < THRESHOLD1
       \/ \A fr \in { rr \in Rounds: rr > r }:  \* future rounds
            \A w \in (Values \union {NilValue}) \ {v}:
-            Cardinality(Senders({m \in msgsPrevote[fr]: m.id = w})) < 2 * T + 1
+            Cardinality(Senders({m \in msgsPrevote[fr]: m.id = w})) < THRESHOLD2
     
 Inv ==
-    /\ TypeOK
     /\ AllNoFutureMessagesSent
     /\ AllIfInPrevoteThenSentPrevote
     /\ AllIfInPrecommitThenSentPrecommit
@@ -518,29 +531,29 @@ Inv ==
     /\ AllLockedRoundIffLockedValue
     /\ AllIfLockedRoundThenSentCommit
     /\ AllLatestPrecommitHasLockedRound
-    \* not inductive: /\ AllValidRoundNotSmallerThanLockedRound
-    /\ AllIfValidRoundThenTwoThirds
-    /\ AllIfValidRoundThenProposal
-    \* not inductive: /\ ProposalsNeverSendLargerValidRound
+    \* /\ AllIfValidRoundThenTwoThirds  \* no need for safety
+    \*/\ AllIfValidRoundThenProposal    \* no need for safety
     /\ AllIfSentPrevoteThenReceivedProposalOrTwoThirds
     /\ IfSentPrecommitThenReceivedTwoThirds
     /\ AllNoEquivocationByCorrect
     /\ PrecommitsLockValue
+
+TypedInv == TypeOK /\ Inv    
     
-(******************************** FORK ACCOUNTABILITY  ***************************************)
-NoEquivocation ==
-    \A r \in Rounds:
-        /\ \A m1, m2 \in msgsPropose[r]:
-            m1 /= m2 => m1.src /= m2.src
-        /\ \A m1, m2 \in msgsPrevote[r]:
-            m1 /= m2 => m1.src /= m2.src
-        /\ \A m1, m2 \in msgsPrecommit[r]:
-            m1 /= m2 => m1.src /= m2.src
+(**************************** FORK ACCOUNTABILITY  ***************************)
+Equivocation ==
+  \E r \in Rounds:
+    \/ \E m1, m2 \in msgsPropose[r]:
+      m1 /= m2 /\ m1.src = m2.src
+    \/ \E m1, m2 \in msgsPrevote[r]:
+      m1 /= m2 /\ m1.src = m2.src
+    \/ \E m1, m2 \in msgsPrecommit[r]:
+      m1 /= m2 /\ m1.src = m2.src
 
 InitNoEquivocation ==
-    Init /\ NoEquivocation
+    Init /\ ~Equivocation
 
-\* amneasic behavior by process p
+\* amnesic behavior by a process p
 Amnesia(p) ==
     \E r1, r2 \in Rounds:
       /\ r1 < r2
@@ -556,7 +569,7 @@ Amnesia(p) ==
             Cardinality(prevotes) < THRESHOLD2
 
 (******************************** PROPERTIES  ***************************************)
-\* simple reachability properties to make sure that the algorithm is doing anything useful
+\* simple reachability properties to see that the spec is progressing
 NoPrevote == \A p \in Corr: step[p] /= "PREVOTE" 
 
 NoPrecommit == \A p \in Corr: step[p] /= "PRECOMMIT"   
@@ -575,14 +588,30 @@ Agreement == \A p, q \in Corr:
     \/ decision[p] = NilValue
     \/ decision[q] = NilValue
     \/ decision[p] = decision[q]
+
+Validity ==
+    \A p \in Corr: decision[p] \in ValidValues \union {NilValue}
  
-AgreementAndAmnesia ==
+\* when agreement is violated, at least one faulty process has amnesia
+AgreementOrAmnesia ==
     Agreement \/ (\E p \in Faulty: Amnesia(p))
  
 AgreementNoAmnesia ==
     Agreement \/ ~(\E p \in Faulty: Amnesia(p))
+
+InvAndNoEquivocation ==
+    Inv /\ ~Equivocation
     
+\* use this predicate for the initial states
+TypedInvNoEquivocationNoAmnesia ==
+    TypeOK /\ Inv /\ ~Equivocation /\ (\A p \in Faulty: ~Amnesia(p))
+
+\* the invariant to check
+AgreementOrEquivocationOrAmnesia ==
+    \/ Agreement
+    \/ Equivocation
+    \/ \E p \in Faulty: Amnesia(p)
+
+
 =============================================================================    
-    
-    
  
