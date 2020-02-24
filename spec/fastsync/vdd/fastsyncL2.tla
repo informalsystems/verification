@@ -76,7 +76,7 @@ NoMsg == [type |-> "None"]
 
 \* the variables of the node running fastsync
 VARIABLES
-  state,                                     \* running, synced or finished                              
+  state,                                     \* running or finished                              
   blockPool
   (*
   blockPool [
@@ -526,5 +526,5 @@ Termination == state = "finished" =>
           
 \*=============================================================================
 \* Modification History
-\* Last modified Mon Feb 24 15:52:27 CET 2020 by zarkomilosevic
+\* Last modified Mon Feb 24 17:01:25 CET 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
