@@ -27,17 +27,29 @@ correctly until time h.Time + TRUSTED_PERIOD. We don't make any assumptions abou
 
 In this spec we assume a simpler problem (compared to complete fast-sync) defined with the following assumptions: 
 
-- we are given fixed set of peers with various distribution of heights
+- node is initialised with a set of peers with which messages can be exchanged
 - peers can be removed (in case they misbehave) but they cannot be added
-- some numbers of peers is faulty (input parameter)
+- some numbers of peers is faulty (correct and faulty peer ids are input parameter)
 - peers do not modify its height, i.e., we take a snaphsot of the system and try to sync as much as we can
-within that shapshot; therefore StatusRequest is sent only once
+within that shapshot; therefore StatusRequest message is sent only once
 - we assume synchronous communication between correct processes (node and correct peers) and model communication
 with asycnhronous rpc calls, i.e, every request receives corresponding reply 
 - faulty processes can send arbitrary messages (even if they are not requested)
 - fast sync should terminate with at least a block height that is equal to the maximum height of the correct peer
-- termination should happen during the period when node is not under DDoS, i.e., we assume that 
-response is generated only if the node asked by sending a request          
+
+This spec can be extended allong the following lines to capture full fast sync problem:
+
+1) Node can establish connections to other peers during fast sync protocol. This should probably be modelled by having
+additional input message received by Node (AddPeer). This should be relatively easily supported
+as it shouldn't significantly affect termination conditions. More preciselly, the properties should be very similar 
+in case we bound eventually reception of AddPeer messages; otherwise we can't terminate as AddPeer message can 
+always delay termination.
+
+2) Peers modify its height (blockchain grows) and node wants to try to sync to the latest block. In this case, node
+needs to send multiple StatusRequest messages. We might want to try to model this variant as multi-round version of this
+spec where round corresponds to a single loop (StatusRequest sent -> All corresponding StatusResponses received -> Termination 
+condition satisfied). In this case starting next round could be modelled as an external event (NextRound). 
+Termination condition would then be constrained of eventually stopping to receive NextRound events.   
 *)
 
 EXTENDS Integers, FiniteSets, Sequences 
@@ -76,7 +88,7 @@ NoMsg == [type |-> "None"]
 
 \* the variables of the node running fastsync
 VARIABLES
-  state,                                     \* running, synced or finished                              
+  state,                                     \* running or finished                              
   blockPool
   (*
   blockPool [
@@ -526,5 +538,5 @@ Termination == state = "finished" =>
           
 \*=============================================================================
 \* Modification History
-\* Last modified Mon Feb 24 15:52:27 CET 2020 by zarkomilosevic
+\* Last modified Mon Feb 24 17:18:20 CET 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
