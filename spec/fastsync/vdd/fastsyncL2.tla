@@ -472,16 +472,6 @@ Init ==
     /\ inMsg = NoMsg
     /\ outMsg = [type |-> "statusRequest", peerIds |-> blockPool.peerIds]
     
-(*
-FlipTurn == 
- turn' = (
-  IF turn = "Peers" THEN 
-   "Node" 
-  ELSE
-   "Peers"
- ) 
-*)
-
 Next ==
     IF turn = "Peers"
     THEN
@@ -529,14 +519,10 @@ NeverFinishWithEmptyPeerSet == state = "finished" => blockPool.peerIds = {}
 Termination == state = "finished" => 
     \/ blockPool.peerIds = {} 
     \/ blockPool.height >= MaxPeerHeight(blockPool)
-    
-    \* Termination1 == WF_turn(FlipTurn) /\ (CORRECT = {}) => <>(state = "finished")
-    
-    
-    
+        
 =============================================================================
           
 \*=============================================================================
 \* Modification History
-\* Last modified Mon Feb 24 17:18:20 CET 2020 by zarkomilosevic
+\* Last modified Mon Feb 24 17:30:09 CET 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
