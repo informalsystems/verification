@@ -42,20 +42,24 @@ response is generated only if the node asked by sending a request
 
 EXTENDS Integers, FiniteSets, Sequences 
 
-CONSTANTS MAX_HEIGHT, NPEERS, F, TARGET_PENDING, PEER_MAX_REQUESTS
+CONSTANTS MAX_HEIGHT, 
+          CORRECT, 
+          FAULTY, 
+          TARGET_PENDING, 
+          PEER_MAX_REQUESTS
 
 \* the set of potential heights
 Heights == 1..MAX_HEIGHT
 
+\* simplifies execute blocks logic. Used only in block store. 
+HeightsPlus == 1..MAX_HEIGHT+1
+
 \* the set of all peer ids the node can receive a message from
-AllPeerIds == 1..NPEERS
-Correct == 1..NPEERS-F
-Faulty == NPEERS-F+1..NPEERS
+AllPeerIds == CORRECT \union FAULTY
 
-
-\* correct node will create always valid blocks, i.e., wellFormed = true and lastCommit = true. 
 Blocks == [height: Heights, wellFormed: BOOLEAN, lastCommit: BOOLEAN]
 
+\* correct node will create always valid blocks, i.e., wellFormed = true and lastCommit = true. 
 CorrectBlock(h) == [height |-> h, wellFormed |-> TRUE, lastCommit |-> TRUE]
 
 NilBlock == [height |-> 0, wellFormed |-> TRUE, lastCommit |-> TRUE]
@@ -72,7 +76,7 @@ NoMsg == [type |-> "None"]
 
 \* the variables of the node running fastsync
 VARIABLES
-  state,                                  \* running or finished
+  state,                                     \* running, synced or finished                              
   blockPool
   (*
   blockPool [
@@ -91,8 +95,7 @@ VARIABLES
   (*
   peersState [
     peerHeights,                             \* track peer heights
-    statusRequested,                         \* true if peers received statusRequest and not all peers responded
-    statusResponseSentBy,                    \* set of peers that responded to the latest statusRequest
+    statusRequested,                         \* set of statusRequests received that are not answered yet 
     blocksRequested,                         \* set of blockRequests received that are not answered yet 
     turn                                     \* sending statusResponse or blockResponse
   ]
@@ -117,14 +120,14 @@ InMsgs ==
     [type: {"blockResponse"}, peerId: AllPeerIds, block: Blocks]
 
 FaultyInMsgs ==
-    [type: {"statusResponse"}, peerId: Faulty, height: Heights]
+    [type: {"statusResponse"}, peerId: FAULTY, height: Heights]
         \union
-    [type: {"blockResponse"}, peerId: Faulty, block: Blocks]    
+    [type: {"blockResponse"}, peerId: FAULTY, block: Blocks]    
 
 OutMsgs ==
     {NoMsg}
         \union
-    [type: {"statusRequest"}]    
+    [type: {"statusRequest"}, peerIds: SUBSET AllPeerIds \ {}] \* NOTE: peerIds is a set of ids    
         \union  
     [type: {"blockRequest"}, peerId: AllPeerIds, height: Heights]  
         
@@ -133,64 +136,69 @@ OutMsgs ==
 
 InitNode == 
     \E startHeight \in Heights: 
-        /\    blockPool = [
+        \E pIds \in SUBSET AllPeerIds:
+        /\ pIds /= {}
+        /\ startHeight <= MAX_HEIGHT - 1
+        /\ blockPool = [
                 height |-> startHeight,
-                peerIds |-> {},
+                peerIds |-> pIds, 
                 peerHeights |-> [p \in AllPeerIds |-> NilHeight],     \* no peer height is known
-                blockStore |-> [h \in Heights |-> NilBlock],
+                blockStore |-> [h \in HeightsPlus |-> NilBlock],
                 receivedBlocks |-> [h \in Heights |-> NilPeer],
                 pendingBlocks |-> [h \in Heights |-> NilPeer] 
-            ]
-       /\ state = IF startHeight <= MAX_HEIGHT - 1 THEN "running" ELSE "finished"
+           ]
+       /\ state = "running" 
+       
 
 \* using this operator we capture assumption that correct processes always respond timely
-MsgOnTime(msg, msgOnTime) == 
-    IF msg.peerId \in Correct 
+MsgOnTime(msg, randomFlag) == 
+    IF msg.peerId \in CORRECT 
     THEN TRUE 
-    ELSE msgOnTime  
+    ELSE randomFlag  
     
-\* remove faulty peer.
-\* returns new bPool. If peer is alredy removed, return input value.  
+\* Remove faulty peer.
+\* Returns new block pool. If the peer is alredy removed, returns input value.  
 RemovePeer(peer, bPool) ==       
     LET pIds == bPool.peerIds \ {peer} IN
     LET pHeights == [bPool.peerHeights EXCEPT ![peer] = NilHeight] IN
-    LET failedRequests == {h \in Heights: bPool.pendingBlocks[h] = peer} IN
+    LET failedRequests == {h \in Heights: h >= bPool.height /\ bPool.pendingBlocks[h] = peer} IN
     LET pBlocks == 
     [h \in Heights |-> IF h \in failedRequests THEN NilPeer ELSE bPool.pendingBlocks[h]] IN  
+    LET rBlocks == 
+    [h \in Heights |-> IF h \in failedRequests THEN NilPeer ELSE bPool.receivedBlocks[h]] IN
     LET bStore == 
-    [h \in Heights |-> IF h \in failedRequests THEN NilBlock ELSE bPool.blockStore[h]] IN
+    [h \in Heights |-> IF h \in failedRequests THEN NilBlock ELSE bPool.blockStore[h]] IN  \* Should we remove received block in this case?
     
     IF peer \in bPool.peerIds     
     THEN [bPool EXCEPT 
             !.peerIds = pIds,
             !.peerHeights = pHeights,
             !.pendingBlocks = pBlocks,
+            !.receivedBlocks = rBlocks,
             !.blockStore = bStore
           ]                              
     ELSE bPool
      
-\* if valid (and timely) status response, update peerIds and peerHeights.
-\* if invalid message, then remove peer (update nPeerVars)
-\* returns <<newPeerSet, newPeerHeights, newBlockStore, newReceivedBlocks, newPendingBlocks>>                                     
-HandleStatusResponse(msg, bPool, msgOnTime) == 
-    IF /\ msg.peerId \notin bPool.peerIds 
-       /\ MsgOnTime(msg, msgOnTime) 
-    THEN    \* a new peer and a timely response 
-        LET pIds == bPool.peerIds \union {msg.peerId} IN
+\* If valid (and timely) status response, update peerHeights.
+\* If invalid message, then remove peer.
+\* Returns new block pool.                             
+HandleStatusResponse(msg, bPool, randomFlag) == 
+    LET peerHeight == bPool.peerHeights[msg.peerId] IN     
+    IF /\ msg.peerId \in bPool.peerIds 
+       /\ MsgOnTime(msg, randomFlag)
+       /\ msg.height >= peerHeight  
+    THEN    \* a correct and timely response 
         LET pHeights == [bPool.peerHeights EXCEPT ![msg.peerId] = msg.height] IN
-        [bPool EXCEPT 
-            !.peerIds = pIds,
-            !.peerHeights = pHeights
-         ]                   
-    ELSE RemovePeer(msg.peerId, bPool)   \* the peer has sent us duplicate status message or not on time
+        [bPool EXCEPT !.peerHeights = pHeights]                   
+    ELSE RemovePeer(msg.peerId, bPool)   \* the peer has sent us duplicate status message or not on time or it was not solicited response
         
         
-HandleBlockResponse(msg, bPool, msgOnTime) == 
+HandleBlockResponse(msg, bPool, randomFlag) == 
     LET h == msg.block.height IN
     IF /\ msg.peerId \in bPool.peerIds
        /\ bPool.blockStore[h] = NilBlock 
        /\ bPool.pendingBlocks[h] = msg.peerId 
-       /\ MsgOnTime(msg, msgOnTime)  
+       /\ MsgOnTime(msg, randomFlag)  
     THEN LET bStore == [bPool.blockStore EXCEPT ![h] = msg.block] IN 
          LET rBlocks == [bPool.receivedBlocks EXCEPT![h] = msg.peerId] IN   
          [bPool EXCEPT 
@@ -200,11 +208,19 @@ HandleBlockResponse(msg, bPool, msgOnTime) ==
     ELSE RemovePeer(msg.peerId, bPool)
                        
 
+MaxPeerHeight(bPool) == 
+    IF bPool.peerIds = {}
+    THEN 0 \* no peers, just return 0
+    ELSE CHOOSE max \in { bPool.peerHeights[p] : p \in bPool.peerIds }:
+            \A p \in bPool.peerIds: bPool.peerHeights[p] <= max \* max is the maximum
+    
+
 \* returns next height for which request should be sent.
 \* returns NilHeight in case there is no height for which request can be sent.
 FindNextRequestHeight(bPool) == 
     LET S == {i \in Heights:  
-                /\ i >= bPool.height 
+                /\ i >= bPool.height  
+                /\ i <= MaxPeerHeight(bPool)   
                 /\ bPool.blockStore[i] = NilBlock 
                 /\ bPool.pendingBlocks[i] = NilPeer} IN
     IF S = {} 
@@ -212,15 +228,30 @@ FindNextRequestHeight(bPool) ==
     ELSE      
         CHOOSE min \in S:  \A h \in S: h >= min
 
-FindPeerToServe(bPool) == 
-    LET peersThatCanServe == {p \in bPool.peerIds: 
-                /\ bPool.peerHeights[p] >= bPool.height 
-                /\ LET peerPendingRequests == 
-                    {i \in Heights: i >= bPool.height /\ bPool.pendingBlocks[i] = p}
-                   IN Cardinality(peerPendingRequests) < PEER_MAX_REQUESTS } IN
+\* Returns number of pending requests for a given peer.
+NumOfPendingRequests(bPool, peer) == 
+    LET peerPendingRequests == 
+        {h \in Heights: 
+            /\ h >= bPool.height 
+            /\ bPool.pendingBlocks[h] = peer
+            /\ bPool.blockStore[h] = NilBlock
+        }
+    IN 
+    Cardinality(peerPendingRequests)
+
+\* Returns peer that can serve block for given height. 
+\* Returns NilPeer in case there are no such peer.
+FindPeerToServe(bPool, h) == 
+    LET peersThatCanServe == { p \in bPool.peerIds: 
+                /\ bPool.peerHeights[p] >= h 
+                /\ NumOfPendingRequests(bPool, p) <= PEER_MAX_REQUESTS } IN
     
     LET pendingBlocks == 
-        {i \in Heights: i >= bPool.height /\ bPool.pendingBlocks[i] /= NilPeer} IN
+        {i \in Heights: 
+            /\ i >= bPool.height 
+            /\ bPool.pendingBlocks[i] /= NilPeer
+            /\ bPool.blockStore[i] = NilBlock
+        } IN
     
     IF \/ peersThatCanServe = {} 
        \/ Cardinality(pendingBlocks) > TARGET_PENDING 
@@ -228,29 +259,47 @@ FindPeerToServe(bPool) ==
     ELSE CHOOSE p \in peersThatCanServe: TRUE    \* TODO: Maybe introduce nondeterminism for peer selection
     
        
+\* Make a request for a block (if possible) and returns request message and block poool.
 CreateRequest(bPool) ==
-    LET minHeight == FindNextRequestHeight(bPool) IN
-    IF minHeight = NilHeight THEN [msg |-> NoMsg, pool |-> bPool]
+    LET nextHeight == FindNextRequestHeight(bPool) IN
+    IF nextHeight = NilHeight THEN [msg |-> NoMsg, pool |-> bPool]
     ELSE
-     LET peer == FindPeerToServe(bPool) IN
+     LET peer == FindPeerToServe(bPool, nextHeight) IN
      IF peer = NilPeer THEN [msg |-> NoMsg, pool |-> bPool]
      ELSE 
-        LET m == [type |-> "blockRequest", peerId |-> peer, height |-> minHeight] IN
+        LET m == [type |-> "blockRequest", peerId |-> peer, height |-> nextHeight] IN
         LET newPool == [bPool EXCEPT 
-                          !.pendingBlocks = [bPool.pendingBlocks EXCEPT ![m.height] = m.peerId]
+                          !.pendingBlocks = [bPool.pendingBlocks EXCEPT ![nextHeight] = peer]
                         ] IN
         [msg |-> m, pool |-> newPool]   
         
 
-\* TODO: add timer based decision in case peerIds is empty
+\* Returns node state, i.e., defines termination condition. 
 GetState(bPool) == 
-    LET maxPeerHeight == 
-        CHOOSE max \in Heights: 
-            \A p \in bPool.peerIds: bPool.peerHeights[p] <= max IN
+    IF /\ bPool.height < MaxPeerHeight(bPool) 
+       /\ bPool.peerIds /= {}  
+    THEN "running" 
+    ELSE "finished" 
+
+
+(*
+    - block bStore[bPool.height - 1] is trusted block and it defines next validator set that is executing block at bPool.height
+    - last commit for the block at height bPool.height is part of the block at height bPool.height + 1
+    - validity of last commit for block at bPool.height therefore depends on the block bStore[bPool.height - 1]. It consists in verifying
+      if > 2/3 of the voting power of the trusted validator set has signed it.
+    - block at height h is valid if it is wellformed and if last commit from the block at height h+1 is valid and signs the block at height h
+*)
+
+IsValidCommit(trustedBlock, block) ==
+    /\ trustedBlock.height = block.Height - 2 
+    /\ block.lastCommit
     
-    IF bPool.height <= maxPeerHeight - 1 THEN "running" ELSE "finished" 
-
-
+IsValidBlock(trustedCommit, block) == 
+    /\ trustedCommit 
+    /\ block.wellFormed
+    
+\* Tries to execute next block in the pool, i.e., defines block validation logic. 
+\* Returns new block pool (peers that has send invalid blocks are removed).
 ExecuteBlocks(bPool) ==  
     LET bStore == bPool.blockStore IN
     LET block1 == bStore[bPool.height] IN
@@ -258,29 +307,30 @@ ExecuteBlocks(bPool) ==
     
     IF block1 = NilBlock \/ block2 = NilBlock \* we don't have two next consequtive blocks
     THEN bPool   
-    ELSE IF ~block2.lastCommit 
-         THEN RemovePeer(bPool.receivedBlocks[bPool.height+1], bPool)
-         ELSE IF block1.wellFormed 
+    ELSE IF ~IsValidCommit(bStore[bPool.height - 1], block2) 
+         THEN RemovePeer(bPool.receivedBlocks[block2.height], bPool)
+         ELSE IF IsValidBlock(block2.lastCommit, block1)
               THEN \* all good, execute block at position height
                  [bPool EXCEPT !.height = bPool.height + 1]
               ELSE  
-                 RemovePeer(bPool.receivedBlocks[bPool.height], bPool)        
-          
+                 RemovePeer(bPool.receivedBlocks[block1.height], bPool)        
 
-HandleResponse(msg, bPool, msgOnTime) == 
+              
+HandleResponse(msg, bPool, randomFlag) == 
     IF msg = NoMsg 
     THEN bPool
     ELSE IF msg.type = "statusResponse" 
-        THEN HandleStatusResponse(msg, bPool, msgOnTime)
-        ELSE HandleBlockResponse(msg, bPool, msgOnTime)
+        THEN HandleStatusResponse(msg, bPool, randomFlag)
+        ELSE HandleBlockResponse(msg, bPool, randomFlag)
     
 NodeStep ==
-   \E msgOnTime \in BOOLEAN:
-        LET bPool == HandleResponse(inMsg, blockPool, msgOnTime) IN
+   \E randomFlag \in BOOLEAN:
+        LET bPool == HandleResponse(inMsg, blockPool, randomFlag) IN
         LET nbPool == ExecuteBlocks(bPool) IN
         LET msgAndPool == CreateRequest(nbPool) IN 
+        LET nstate == GetState(msgAndPool.pool) IN
    
-        /\ state' = GetState(msgAndPool.pool)
+        /\ state' = nstate
         /\ blockPool' = msgAndPool.pool
         /\ outMsg' = msgAndPool.msg
         /\ inMsg' = NoMsg
@@ -289,7 +339,7 @@ NodeStep ==
 \* If node is running, then in every step we try to create blockRequest.
 \* In addition, input message (if exists) is consumed and processed. 
 NextNode ==
-    \/ /\ state = "running"
+    \/ /\ state /= "finished" 
        /\ NodeStep  
               
     \/ /\ state = "finished" 
@@ -305,14 +355,14 @@ InitPeers ==
     \E pHeights \in [AllPeerIds -> Heights]: 
         peersState = [
          peerHeights |-> pHeights,
-         statusRequested |-> FALSE,
-         statusResponseSentBy |-> {},
-         blocksRequested |-> {}
+         statusRequested |-> {},
+         blocksRequested |-> {},
+         turn |-> "status"
     ]
             
-HandleStatusRequest(pState) == 
+HandleStatusRequest(msg, pState) == 
     [pState EXCEPT 
-        !.statusRequested = TRUE
+        !.statusRequested = msg.peerIds
     ]    
 
 HandleBlockRequest(msg, pState) == 
@@ -324,69 +374,75 @@ HandleRequest(msg, pState) ==
     IF msg = NoMsg 
     THEN pState
     ELSE IF msg.type = "statusRequest" 
-         THEN HandleStatusRequest(pState)
-         ELSE HandleBlockRequest(msg, pState)
-                
+         THEN HandleStatusRequest(msg, pState)
+         ELSE HandleBlockRequest(msg, pState)               
 
-CreateStatusResponse(peer, pState) == 
-    LET m == [type |-> "statusResponse", peerId |-> peer, height |-> pState.peerHeights[peer]] IN
+CreateStatusResponse(peer, pState, randomHeight) ==  
+    LET m == 
+        IF peer \in CORRECT 
+        THEN [type |-> "statusResponse", peerId |-> peer, height |-> pState.peerHeights[peer]]
+        ELSE [type |-> "statusResponse", peerId |-> peer, height |-> randomHeight] IN
     LET npState == 
         [pState EXCEPT 
-            !.statusResponseSentBy = pState.statusResponseSentBy \union {peer}      
+            !.statusRequested = pState.statusRequested \ {peer}       
         ] IN
     [msg |-> m, peers |-> npState] 
              
-CreateBlockResponse(msg, pState) == 
-    LET m == [type |-> "blockResponse", peerId |-> msg.peerId, block |-> CorrectBlock(msg.height)] IN
+CreateBlockResponse(msg, pState, randomBlock) == 
+    LET m == 
+        IF msg.peerId \in CORRECT
+        THEN [type |-> "blockResponse", peerId |-> msg.peerId, block |-> CorrectBlock(msg.height)]
+        ELSE [type |-> "blockResponse", peerId |-> msg.peerId, block |-> randomBlock] IN
     LET npState == 
         [pState EXCEPT 
             !.blocksRequested = pState.blocksRequested \ {msg}      
         ] IN
     [msg |-> m, peers |-> npState]   
 
-
 CreateResponse(pState) == 
-    LET correctNotSentStatusResponse == 
-            {p \in AllPeerIds: p \in Correct \ pState.statusResponseSentBy} IN
-    
-    \/ /\ pState.statusRequested 
-       /\ correctNotSentStatusResponse /= {} 
+    \/ /\ pState.statusRequested /= {}  
        /\ pState.blocksRequested /= {}
        /\ \E t \in TurnResponse:
             \/ /\ t = "status"
-               /\ \E p \in correctNotSentStatusResponse: 
-                    CreateStatusResponse(p, pState)
+               /\ \E h \in Heights: 
+                  \E peer \in pState.statusRequested:   
+                    LET msgAndPeers == CreateStatusResponse(peer, pState, h) IN
+                    /\ peersState' = msgAndPeers.peers
+                    /\ inMsg' = msgAndPeers.msg   
+                                                               
             \/ /\ t = "block"        
                /\ \E msg \in pState.blocksRequested:
-                    CreateBlockResponse(msg, pState)
+                   \E block \in Blocks:
+                    LET msgAndPeers == CreateBlockResponse(msg, pState, block) IN      
+                    /\ peersState' = msgAndPeers.peers
+                    /\ inMsg' = msgAndPeers.msg  
     
-    \/ /\ pState.statusRequested 
-       /\ correctNotSentStatusResponse /= {} 
+    \/ /\ pState.statusRequested /= {}  
        /\ pState.blocksRequested = {}
-       /\ \E p \in correctNotSentStatusResponse: 
-              LET msgAndPeers == CreateStatusResponse(p, pState) IN      
-              /\ peersState' = msgAndPeers.peers
-              /\ inMsg' = msgAndPeers.msg   
+       /\ \E h \in Heights: 
+            \E peer \in pState.statusRequested:   
+                LET msgAndPeers == CreateStatusResponse(peer, pState, h) IN
+                /\ peersState' = msgAndPeers.peers
+                /\ inMsg' = msgAndPeers.msg     
     
     
-    \/ /\ (~pState.statusRequested \/ correctNotSentStatusResponse = Correct) 
-       /\  pState.blocksRequested /= {}
+    \/ /\ pState.statusRequested = {} 
+       /\ pState.blocksRequested /= {}
        /\ \E msg \in pState.blocksRequested:
-              LET msgAndPeers == CreateBlockResponse(msg, pState) IN      
-              /\ peersState' = msgAndPeers.peers
-              /\ inMsg' = msgAndPeers.msg   
-    
+            \E block \in Blocks:
+                LET msgAndPeers == CreateBlockResponse(msg, pState, block) IN      
+                /\ peersState' = msgAndPeers.peers
+                /\ inMsg' = msgAndPeers.msg  
                     
-    \/ /\ (~pState.statusRequested \/ correctNotSentStatusResponse = Correct)
+    \/ /\ pState.statusRequested = {}
        /\ pState.blocksRequested = {}
        /\ peersState' = pState
        /\ inMsg' = NoMsg                  
     
-\* peersState consumes a message and update it's local state. It then makes a single step, i.e., it sends at most single message.
-\* message sent could be either from correct processes as a result of received messages or faulty message. 
+\* Peers consume a message and update it's local state. It then makes a single step, i.e., it sends at most single message.
+\* Message sent could be either response to a request or faulty message (sent by faulty processes). 
 NextPeers ==
     LET pState == HandleRequest(outMsg, peersState) IN
-    LET msgAndPeers == CreateResponse(pState) IN
     
     \/  /\ outMsg' = NoMsg                    \* correct peers respond
         /\ CreateResponse(pState) 
@@ -398,11 +454,21 @@ NextPeers ==
 
 \* the composition of the node, the peers, the network and scheduler
 Init ==
-    /\ turn = "Peers"
-    /\ inMsg = NoMsg
-    /\ outMsg = [type |-> "statusRequest"]
     /\ InitNode
     /\ InitPeers
+    /\ turn = "Peers"
+    /\ inMsg = NoMsg
+    /\ outMsg = [type |-> "statusRequest", peerIds |-> blockPool.peerIds]
+    
+(*
+FlipTurn == 
+ turn' = (
+  IF turn = "Peers" THEN 
+   "Node" 
+  ELSE
+   "Peers"
+ ) 
+*)
 
 Next ==
     IF turn = "Peers"
@@ -422,9 +488,37 @@ TypeOK ==
     /\ state \in States
     /\ inMsg \in InMsgs 
     /\ outMsg \in OutMsgs
+    /\ turn \in {"Peers", "Node"}
+    /\ peersState \in [
+         peerHeights: [AllPeerIds -> Heights \union {NilHeight}],
+         statusRequested: SUBSET AllPeerIds,
+         blocksRequested: SUBSET [type: {"blockResponse"}, peerId: AllPeerIds, block: Blocks],
+         turn: {"status", "block"}
+        ]
+    /\ blockPool \in [
+                height: Heights,
+                peerIds: SUBSET AllPeerIds, 
+                peerHeights: [AllPeerIds -> Heights \union {NilHeight}],     
+                blockStore: [HeightsPlus -> Blocks \union {NilBlock}],
+                receivedBlocks: [Heights -> AllPeerIds \union {NilPeer}],
+                pendingBlocks: [Heights -> AllPeerIds \union {NilPeer}]
+           ] 
+           
+           
     
 \* a few simple properties that trigger counterexamples
-NeverFinishAtMax == state = "finished" => blockPool.height = MAX_HEIGHT
+NeverFinishAtMax == state = "finished" => blockPool.height < MaxPeerHeight(blockPool) 
+
+NeverFinishWithEmptyPeerSet == state = "finished" => blockPool.peerIds = {}
+
+\* if there is at least single correct process in peerSet, then blockPool.height >= maxCorrect - 1
+
+\* Termination condition
+Termination == state = "finished" => 
+    \/ blockPool.peerIds = {} 
+    \/ blockPool.height >= MaxPeerHeight(blockPool)
+    
+    \* Termination1 == WF_turn(FlipTurn) /\ (CORRECT = {}) => <>(state = "finished")
     
     
     
@@ -432,5 +526,5 @@ NeverFinishAtMax == state = "finished" => blockPool.height = MAX_HEIGHT
           
 \*=============================================================================
 \* Modification History
-\* Last modified Mon Feb 10 18:11:58 CET 2020 by zarkomilosevic
+\* Last modified Mon Feb 24 15:52:27 CET 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
