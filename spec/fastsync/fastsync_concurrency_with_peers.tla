@@ -20,6 +20,11 @@ VARIABLES turn, \* which routine is taking a step
           peerToReceive, \* the buffers outgoing from the peers
           peerTurn \* the current peer that receives a block request and sends a block response
 
+\* constant initialization predicate for Apalache
+ConstInit ==
+    /\ QueueMaxSize = 1
+    /\ NrPeers = 2
+
 \* set of peers
 PeerIDs == 1..NrPeers
 
@@ -583,7 +588,7 @@ Fairness ==
 Spec == Init /\ [][Next]_vars /\ Fairness
   
 
-Invariant ==
+GoodState ==
     \/ ~IsEmpty(receiveToDemux) => IsReady(demuxToSchedule)
     \/ ~IsEmpty(processToDemux) => IsReady(demuxToSchedule)
     \/ /\ ~IsEmpty(scheduleToDemux) 
@@ -604,8 +609,12 @@ Invariant ==
     \/ \A peerID \in PeerIDs: ~IsEmpty(nodeToPeer[peerID]) => IsReady(peerToReceive[peerID])
     
     \/ ~IsEmpty(peerToReceive[peerTurn]) => IsReady(receiveToDemux)
+    
+Invariant ==
+    /\ TypeOK
+    /\ GoodState
         
 =============================================================================
 \* Modification History
-\* Last modified Mon Feb 24 19:51:02 CET 2020 by ilinastoilkovska
+\* Last modified Mon Feb 24 20:26:07 CET 2020 by ilinastoilkovska
 \* Created Wed Feb 05 15:44:25 CET 2020 by ilina
