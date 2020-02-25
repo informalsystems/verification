@@ -1,9 +1,10 @@
 ----------------------------- MODULE Blockchain -----------------------------
 (* This is a high-level specification of Tendermint blockchain
-   that is designed specifically for:
+   following the VDD English specification 
    
-   (1) Lite client, and
-   (2) Fork accountability.
+   https://github.com/informalsystems/VDD/blob/master/blockchain/blockchain.md
+   
+   Tags of the form [TMBC*] refer to definitions in the specification.
  *)
 EXTENDS Integers, Sequences
 
@@ -17,26 +18,33 @@ CONSTANT
   MAX_POWER
     (* a maximal voting power of a single node *)
 
-Heights == 0..ULTIMATE_HEIGHT   (* possible heights *)
+Heights == 0..ULTIMATE_HEIGHT   (* possible heights [TMBC-SEQ] *)
 
 Powers == 1..MAX_POWER          (* possible voting powers *)
 
-(* A commit is just a set of nodes who have committed the block *)
+(* A commit is just a set of nodes who have committed the block [TMBC-Sign] *)
 Commits == SUBSET AllNodes
 
 (* The set of all block headers that can be on the blockchain.
-   This is a simplified version of the Block data structure in the actual implementation. *)
+   This is a simplified version of the Block data structure in the actual implementation. 
+   In particular, bfttime is omitted, and instead a variable minTrustedHeight is used, whose
+   use is explained below. 
+   [TMBC-HEADER]
+   [TMBC-HEADER-FIELDS] 
+*)
 BlockHeaders == [
   height: Heights,
     \* the block height
   lastCommit: Commits,
-    \* the nodes who have voted on the previous block, the set itself instead of a hash
+    \* the nodes who have voted on the previous block, the set itself instead of a hash [TMBC-Sign]
   (* in the implementation, only the hashes of V and NextV are stored in a block,
      as V and NextV are stored in the application state *) 
   VP: UNION {[Nodes -> Powers]: Nodes \in SUBSET AllNodes \ {{}}},
+    \* [TMBC-INV-VALID-UNIQUE]
     \* the validators of this block together with their voting powers,
     \* i.e., a multi-set. We store the validators instead of the hash.
   NextVP: UNION {[Nodes -> Powers]: Nodes \in SUBSET AllNodes \ {{}}}
+    \* [TMBC-INV-NEXT-VALID-UNIQUE]
     \* the validators of the next block together with their voting powers,
     \* i.e., a multi-set. We store the next validators instead of the hash.
 ]
@@ -53,20 +61,21 @@ SignedHeaders == [header: BlockHeaders, Commits: Commits]
 
 VARIABLES
     tooManyFaults,
-    (* whether there are more faults in the system than the blockchain can handle *)
+    (* Whether there are more faults in the system than the blockchain can handle.
+       tooManyFaults = TRUE indicates violation of [TMBC-FM-2THIRDS] *)
     height,
-    (* the height of the blockchain, starting with 0 *)
+    (* the height of the blockchain, starting with 0 [TMBC-SEQ] *)
     minTrustedHeight,
     (* The global height of the oldest block that is younger than
        the trusted period (AKA the almost rotten block).
        In the implementation, this is the oldest block,
-       where block.bftTime + trustingPeriod >= globalClock.now. *)
+       where block.bftTime + trustingPeriod >= globalClock.§ow. *)
     blockchain,
-    (* A sequence of BlockHeaders, which gives us a bird view of the blockchain. *)
+    (* A sequence of BlockHeaders, which gives us a bird view of the blockchain. [TMBC-SEQ] *)
     Faulty
     (* A set of faulty nodes, which can act as validators. We assume that the set
        of faulty processes is non-decreasing. If a process has recovered, it should
-       connect using a different id. *)
+       connect using a different id. [TMBC-CORRECT] [TMBC-FM-2THIRDS] *)
        
 (* all variables, to be used with UNCHANGED *)       
 vars == <<tooManyFaults, height, minTrustedHeight, blockchain, Faulty>>         
@@ -142,7 +151,9 @@ SoundSignedHeaders(ht) ==
 
 (* Append a new block on the blockchain.
    Importantly, more than 2/3 of voting power in the next set of validators
-   belongs to the correct processes. *)       
+   belongs to the correct processes.
+   [TMBC-SEQ]
+   [TMBC-FM-2THIRDS] *)       
 AppendBlock ==
   LET last == blockchain[Len(blockchain)] IN
   \E lastCommit \in SUBSET (VS(last)) \ {{}},
@@ -188,6 +199,7 @@ AdvanceChain ==
 (*
   As time is passing, the minimal trusted height may increase.
   As a result, the blockchain may move out of the faulty zone.
+  [TMBC-TIME]
   *)
 AdvanceTime ==
   /\ minTrustedHeight' \in (minTrustedHeight + 1) .. Min(height + 1, ULTIMATE_HEIGHT)
@@ -247,5 +259,6 @@ NeverStuckFalse2 ==
 
 =============================================================================
 \* Modification History
+\* Last modified Tue Feb 25 15:05:57 CET 2020 by ilinastoilkovska
 \* Last modified Tue Nov 19 11:15:32 CET 2019 by igor
 \* Created Fri Oct 11 15:45:11 CEST 2019 by igor
