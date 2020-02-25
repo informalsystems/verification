@@ -303,7 +303,7 @@ GetState(bPool) ==
 *)
 
 IsValidCommit(trustedBlock, block) ==
-    /\ trustedBlock.height = block.Height - 2 
+    /\ trustedBlock.height = block.height - 2 
     /\ block.lastCommit
     
 IsValidBlock(trustedCommit, block) == 
@@ -319,7 +319,7 @@ ExecuteBlocks(bPool) ==
     
     IF block1 = NilBlock \/ block2 = NilBlock \* we don't have two next consequtive blocks
     THEN bPool   
-    ELSE IF ~IsValidCommit(bStore[bPool.height - 1], block2) 
+    ELSE IF bPool.height > 1 /\ ~IsValidCommit(bStore[bPool.height - 1], block2) 
          THEN RemovePeer(bPool.receivedBlocks[block2.height], bPool)
          ELSE IF IsValidBlock(block2.lastCommit, block1)
               THEN \* all good, execute block at position height
@@ -464,6 +464,8 @@ NextPeers ==
         /\ inMsg' \in FaultyInMsgs         
        
 
+
+
 \* the composition of the node, the peers, the network and scheduler
 Init ==
     /\ InitNode
@@ -471,6 +473,8 @@ Init ==
     /\ turn = "Peers"
     /\ inMsg = NoMsg
     /\ outMsg = [type |-> "statusRequest", peerIds |-> blockPool.peerIds]
+    
+\* AwesomeInit == Init /\ blockPool.peerIds = {1,4}     
     
 Next ==
     IF turn = "Peers"
@@ -516,13 +520,30 @@ NeverFinishWithEmptyPeerSet == state = "finished" => blockPool.peerIds = {}
 \* if there is at least single correct process in peerSet, then blockPool.height >= maxCorrect - 1
 
 \* Termination condition
-Termination == state = "finished" => 
+Correctness1 == state = "finished" => 
     \/ blockPool.peerIds = {} 
     \/ blockPool.height >= MaxPeerHeight(blockPool)
+
+
+\* 
+
+Correctness2 == 
+   \A p \in CORRECT: 
+        [] (state = "finished" => blockPool.height >= blockPool.peerHeights[p] - 1)
+
+Correctness3 == 
+   \A p \in CORRECT: 
+        \/ p \notin blockPool.peerIds 
+        \/ [] (state = "finished" => blockPool.height >= blockPool.peerHeights[p] - 1)
+        
+StateNotFinished == 
+    state /= "finished" \/ MaxPeerHeight(blockPool) = 1
+    
+    
         
 =============================================================================
           
 \*=============================================================================
 \* Modification History
-\* Last modified Mon Feb 24 17:30:09 CET 2020 by zarkomilosevic
+\* Last modified Tue Feb 25 16:53:58 CET 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
