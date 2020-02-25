@@ -288,7 +288,9 @@ CreateRequest(bPool) ==
 
 \* Returns node state, i.e., defines termination condition. 
 GetState(bPool) == 
-    IF /\ bPool.height < MaxPeerHeight(bPool) 
+    IF /\ \/ bPool.height < MaxPeerHeight(bPool) 
+          \/ MaxPeerHeight(bPool) = 0 
+       
        /\ bPool.peerIds /= {}  
     THEN "running" 
     ELSE "finished" 
@@ -449,7 +451,7 @@ CreateResponse(pState) ==
     \/ /\ pState.statusRequested = {}
        /\ pState.blocksRequested = {}
        /\ peersState' = pState
-       /\ inMsg' = NoMsg                  
+       /\ inMsg' \in FaultyInMsgs                  
     
 \* Peers consume a message and update it's local state. It then makes a single step, i.e., it sends at most single message.
 \* Message sent could be either response to a request or faulty message (sent by faulty processes). 
@@ -459,12 +461,6 @@ NextPeers ==
     \/  /\ outMsg' = NoMsg                    \* correct peers respond
         /\ CreateResponse(pState) 
     
-    \/  /\ outMsg' = NoMsg                    \* faulty peers respond
-        /\ peersState' = pState
-        /\ inMsg' \in FaultyInMsgs         
-       
-
-
 
 \* the composition of the node, the peers, the network and scheduler
 Init ==
@@ -486,6 +482,16 @@ Next ==
         /\ NextNode
         /\ turn' = "Peers"
         /\ UNCHANGED peersState  
+
+
+
+FlipTurn == 
+ turn' = (
+  IF turn = "Peers" THEN 
+   "Node" 
+  ELSE
+   "Peers"
+ ) 
         
  
 
@@ -510,40 +516,32 @@ TypeOK ==
                 pendingBlocks: [Heights -> AllPeerIds \union {NilPeer}]
            ] 
            
-           
-    
-\* a few simple properties that trigger counterexamples
-NeverFinishAtMax == state = "finished" => blockPool.height < MaxPeerHeight(blockPool) 
-
-NeverFinishWithEmptyPeerSet == state = "finished" => blockPool.peerIds = {}
-
-\* if there is at least single correct process in peerSet, then blockPool.height >= maxCorrect - 1
-
-\* Termination condition
+              
 Correctness1 == state = "finished" => 
     \/ blockPool.peerIds = {} 
     \/ blockPool.height >= MaxPeerHeight(blockPool)
 
 
-\* 
-
 Correctness2 == 
-   \A p \in CORRECT: 
-        [] (state = "finished" => blockPool.height >= blockPool.peerHeights[p] - 1)
-
-Correctness3 == 
    \A p \in CORRECT: 
         \/ p \notin blockPool.peerIds 
         \/ [] (state = "finished" => blockPool.height >= blockPool.peerHeights[p] - 1)
-        
+          
+
+Termination == WF_turn(FlipTurn) => <>(state = "finished") 
+     
+\* a few simple properties that trigger counterexamples
+
+\* Shows execution in which peer set is empty
+PeerSetIsNeverEmpty == blockPool.peerIds /= {}
+
+\* Shows execution in which state = "finished" and MaxPeerHeight is not equal to 1
 StateNotFinished == 
     state /= "finished" \/ MaxPeerHeight(blockPool) = 1
-    
-    
         
 =============================================================================
           
 \*=============================================================================
 \* Modification History
-\* Last modified Tue Feb 25 16:53:58 CET 2020 by zarkomilosevic
+\* Last modified Tue Feb 25 18:17:48 CET 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
