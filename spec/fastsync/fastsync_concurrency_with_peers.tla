@@ -7,6 +7,10 @@
 
 EXTENDS Naturals, FiniteSets, Sequences
 
+MT == STRING
+a <: b == a
+EmptySeq == <<>> <: Seq(MT)
+
 CONSTANTS QueueMaxSize, NrPeers
 
 VARIABLES turn, \* which routine is taking a step
@@ -19,11 +23,6 @@ VARIABLES turn, \* which routine is taking a step
           nodeToPeer, \* the buffers incoming to the peers
           peerToReceive, \* the buffers outgoing from the peers
           peerTurn \* the current peer that receives a block request and sends a block response
-
-\* constant initialization predicate for Apalache
-ConstInit ==
-    /\ QueueMaxSize = 1
-    /\ NrPeers = 2
 
 \* set of peers
 PeerIDs == 1..NrPeers
@@ -96,7 +95,7 @@ IsEmpty(buffer) -- A buffer prediate checking if a buffer is empty.
 A buffer is empty if its queue is the empty sequence
 *)
 IsEmpty(buffer) ==
-    buffer.queue = <<>> 
+    buffer.queue = EmptySeq
 
 (*
 IsReady(buffer) -- A buffer prediate checking if a buffer is ready.
@@ -154,7 +153,7 @@ PeerBufferBroadcast(peerBuffer, msg) ==
 
 \* initial value of each buffer: the queue is IsEmpty, the inMsg is noMsg
 initBuffer ==
-    [inMsg |-> noMsg, queue |-> <<>>]
+    [inMsg |-> noMsg, queue |-> EmptySeq]
 
 \* type invariant
 TypeOK ==
@@ -165,8 +164,8 @@ TypeOK ==
     /\ processToDemux \in [inMsg : processToDemuxMsgs \union {noMsg}, queue : Seq(processToDemuxMsgs)]
     /\ demuxToSchedule \in [inMsg : demuxToScheduleMsgs \union {noMsg}, queue : Seq(demuxToScheduleMsgs)]
     /\ scheduleToDemux \in [inMsg : scheduleToDemuxMsgs \union {noMsg}, queue : Seq(scheduleToDemuxMsgs)]
-    /\ nodeToPeer \in [PeerIDs : [inMsg : ioMsgs \union {noMsg}, queue : Seq(ioMsgs)]]
-    /\ peerToReceive \in [PeerIDs : [inMsg : peerMsgs \union {noMsg}, queue : Seq(peerMsgs)]]
+    /\ nodeToPeer \in [PeerIDs -> [inMsg : ioMsgs \union {noMsg}, queue : Seq(ioMsgs)]]
+    /\ peerToReceive \in [PeerIDs -> [inMsg : peerMsgs \union {noMsg}, queue : Seq(peerMsgs)]]
     /\ peerTurn \in PeerIDs
 
 \* initial state predicate
@@ -214,7 +213,7 @@ HandleDemuxToProcess ==
     /\ IsReady(processToDemux)
     
     /\ \/ /\ HeadMessage(demuxToProcess) \in {"scBlockReceived", "scFinishedEv", "scPeerError"} 
-          /\ processToDemux' \in BufferSend(processToDemux, {noMsg})
+          /\ UNCHANGED processToDemux
        \/ /\ HeadMessage(demuxToProcess) = "rProcessBlock"
           /\ processToDemux' \in BufferSend(processToDemux, {noMsg, "pcBlockProcessed", "pcBlockVerificationFailure"})   
     
@@ -356,7 +355,7 @@ HandleScheduleToDemux ==
        \/ /\ IsReady(demuxToSend)
           /\ HeadMessage(scheduleToDemux) = "scBlockRequest"
           /\ demuxToSend' \in BufferSend(demuxToSend, {HeadMessage(scheduleToDemux)})
-          /\ UNCHANGED processToDemux
+          /\ UNCHANGED demuxToProcess 
           
     /\ scheduleToDemux' = [scheduleToDemux EXCEPT !.queue = Tail(@)]
     /\ UNCHANGED <<receiveToDemux, processToDemux, demuxToSchedule>>
@@ -538,7 +537,7 @@ InternalPeerBuffer(buffer) ==
     \E peerID \in PeerIDs : 
         /\ buffer[peerID].inMsg /= noMsg
         /\ ~IsFull(buffer[peerID])
-        /\ buffer' = [buffer EXCEPT ![peerID].queue = Append(buffer.queue, buffer.inMsg), 
+        /\ buffer' = [buffer EXCEPT ![peerID].queue = Append(buffer[peerID].queue, buffer[peerID].inMsg), 
                                     ![peerID].inMsg = noMsg]
 
 (*
@@ -616,5 +615,5 @@ Invariant ==
         
 =============================================================================
 \* Modification History
-\* Last modified Mon Feb 24 20:26:07 CET 2020 by ilinastoilkovska
+\* Last modified Tue Feb 25 16:59:00 CET 2020 by ilinastoilkovska
 \* Created Wed Feb 05 15:44:25 CET 2020 by ilina
