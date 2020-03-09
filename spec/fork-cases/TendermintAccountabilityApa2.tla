@@ -23,8 +23,8 @@ Corr == {"c1", "c2", "c3"}  \* 1..N-F
 Faulty == {"f1"}            \* N-F+1..N
 AllProcs == Corr \cup Faulty
 Rounds == 0..2  \* the set of possible rounds, give a bit more freedom to the solver
-ValidValues == {"0", "1"}     \* e.g., picked by a correct process, or a faulty one
-InvalidValues == {"2"}    \* e.g., sent by a Byzantine process
+ValidValues == {"v0", "v1"}     \* e.g., picked by a correct process, or a faulty one
+InvalidValues == {"v2"}    \* e.g., sent by a Byzantine process
 Values == ValidValues \cup InvalidValues \* all values
 NilRound == -1
 NilValue == "None"
@@ -454,34 +454,6 @@ LatestPrecommitHasLockedRound(p) ==
 AllLatestPrecommitHasLockedRound ==
   \A p \in Corr:
     LatestPrecommitHasLockedRound(p)
-    
-\* NOT USED?
-ValidRoundNotSmallerThanLockedRound(p) ==
-  validRound[p] >= lockedRound[p]
-
-ValidRoundIffValidValue(p) ==
-  (validRound[p] = NilRound) <=> (validValue[p] = NilValue)
-
-AllValidRoundIffValidValue ==
-  \A p \in Corr: ValidRoundIffValidValue(p)
-
-\* if validRound is defined, then there are two-thirds of PREVOTEs
-IfValidRoundThenTwoThirds(p) ==
-  \/ validRound[p] = NilRound
-  \/ LET PV == { m \in msgsPrevote[validRound[p]]: m.id = validValue[p] } IN
-     Cardinality(PV) >= THRESHOLD2
-     
-AllIfValidRoundThenTwoThirds ==
-  \A p \in Corr: IfValidRoundThenTwoThirds(p)     
-
-\* a valid round can be only set to a valid value that was proposed earlier
-IfValidRoundThenProposal(p) ==
-  \/ validRound[p] = NilRound
-  \/ \E m \in msgsPropose[validRound[p]]:
-       m.proposal = validValue[p]
-
-AllIfValidRoundThenProposal ==
-  \A p \in Corr: IfValidRoundThenProposal(p)
 
 \* Every correct process sends only one value or NilValue.
 \* This test has quantifier alternation -- a threat to all decision procedures.
@@ -539,7 +511,39 @@ Inv ==
     /\ PrecommitsLockValue
 
 TypedInv == TypeOK /\ Inv    
-    
+       
+\* UNUSED FOR SAFETY
+ValidRoundNotSmallerThanLockedRound(p) ==
+  validRound[p] >= lockedRound[p]
+
+\* UNUSED FOR SAFETY
+ValidRoundIffValidValue(p) ==
+  (validRound[p] = NilRound) <=> (validValue[p] = NilValue)
+
+\* UNUSED FOR SAFETY
+AllValidRoundIffValidValue ==
+  \A p \in Corr: ValidRoundIffValidValue(p)
+
+\* if validRound is defined, then there are two-thirds of PREVOTEs
+IfValidRoundThenTwoThirds(p) ==
+  \/ validRound[p] = NilRound
+  \/ LET PV == { m \in msgsPrevote[validRound[p]]: m.id = validValue[p] } IN
+     Cardinality(PV) >= THRESHOLD2
+     
+\* UNUSED FOR SAFETY
+AllIfValidRoundThenTwoThirds ==
+  \A p \in Corr: IfValidRoundThenTwoThirds(p)     
+
+\* a valid round can be only set to a valid value that was proposed earlier
+IfValidRoundThenProposal(p) ==
+  \/ validRound[p] = NilRound
+  \/ \E m \in msgsPropose[validRound[p]]:
+       m.proposal = validValue[p]
+
+\* UNUSED FOR SAFETY
+AllIfValidRoundThenProposal ==
+  \A p \in Corr: IfValidRoundThenProposal(p)
+ 
 (**************************** FORK ACCOUNTABILITY  ***************************)
 Equivocation ==
   \E r \in Rounds:
@@ -611,7 +615,6 @@ AgreementOrEquivocationOrAmnesia ==
     \/ Agreement
     \/ Equivocation
     \/ \E p \in Faulty: Amnesia(p)
-
 
 =============================================================================    
  
