@@ -11,8 +11,8 @@ a <: b == a
 
 INSTANCE TendermintAccDebug3 WITH
   Corr <- {"c1", "c2", "c3", "c4"},
-  Amnesic <- {},
-  Byzantine <- {"f5", "f6", "f7"},
+  Amnesic <- {"f5"},
+  Byzantine <- {"f6", "f7"},
   N <- 7,
   T <- 2,
   ValidValues <- { "v0", "v1" },
