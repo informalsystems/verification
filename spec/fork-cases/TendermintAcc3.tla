@@ -277,9 +277,36 @@ UponProposalInPrecommitNoDecision(p) ==
                      validRound, msgsPropose, msgsPrevote, msgsPrecommit>>
                                                           
 \* the actions below are not essential for safety, but added for completeness
-\* TODO: add onTimeoutPropose
-\* TODO: add 44-46
-\* TODO: add 55-56
+
+\* lines 20-21 + 57-60
+OnTimeoutPropose(p) ==
+  /\ step[p] = "PROPOSE"
+  /\ p /= Proposer[round[p]]
+  /\ BroadcastPrevote(p, round[p], NilValue)
+  /\ step' = [step EXCEPT ![p] = "PREVOTE"]
+  /\ UNCHANGED <<round, lockedValue, lockedRound, validValue,
+                 validRound, decision, evidence, msgsPropose, msgsPrecommit>>
+
+\* lines 44-46
+OnQuoromOfNilPrevotes(p) ==
+  /\ step[p] = "PREVOTE"
+  /\ LET PV == { m \in msgsPrevote[round[p]]: m.id = Id(NilValue) } IN
+      /\ Cardinality(PV) >= THRESHOLD2 \* line 36
+      /\ evidence' = PV
+  /\ BroadcastPrecommit(p, round[p], Id(NilValue))
+  /\ step' = [step EXCEPT ![p] = "PREVOTE"]
+  /\ UNCHANGED <<round, lockedValue, lockedRound, validValue,
+                 validRound, decision, msgsPropose, msgsPrevote>>
+
+\* lines 55-56
+OnRoundCatchup(p) ==
+  \E r \in {rr \in Rounds: rr > round[p]}:
+    /\ LET RM == msgsPropose[r] \union msgsPrevote[r] \union msgsPrecommit[r] IN
+      /\ Cardinality(RM) >= THRESHOLD1
+      /\ evidence' = RM
+    /\ StartRound(p, r)
+    /\ UNCHANGED <<decision, lockedValue, lockedRound, validValue,
+                   validRound, msgsPropose, msgsPrevote, msgsPrecommit>>
 
 (*
  * A system transition. In this specificatiom, the system may eventually deadlock,
@@ -294,6 +321,10 @@ Next ==
     \/ UponProposalInPrevoteOrCommitAndPrevote(p)
     \/ UponQuorumOfPrecommitsAny(p)
     \/ UponProposalInPrecommitNoDecision(p)
+    \* the actions below are not essential for safety, but added for completeness
+    \/ OnTimeoutPropose(p)
+    \/ OnQuoromOfNilPrevotes(p)
+    \/ OnRoundCatchup(p) 
   
 (**************************** FORK ACCOUNTABILITY  ***************************)
 \* a state that has equivocation
