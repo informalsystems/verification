@@ -37,7 +37,7 @@ EXTENDS Integers, FiniteSets
 (********************* PROTOCOL PARAMETERS **********************************)
 CONSTANTS
     Corr,          \* the set of correct processes 
-    Amnesic,       \* the set of amnesic processes, may be empty
+    Defective,     \* the set of processes that show defects, e.g, amnesia or equivocation
     Byzantine,     \* the set of Byzantine processes, may be empty
     N,             \* the total number of processes: correct, amnesic, and Byzantine
     T,             \* an upper bound on the number of Byzantine processes
@@ -46,10 +46,10 @@ CONSTANTS
     MaxRound,      \* the maximal round number
     Proposer       \* the proposer function from 0..NRounds to 1..N
 
-ASSUME(N = Cardinality(Corr \union Amnesic \union Byzantine))
+ASSUME(N = Cardinality(Corr \union Defective \union Byzantine))
 
 (*************************** DEFINITIONS ************************************)
-Faulty == Amnesic \union Byzantine  \* the set of faulty processes
+Faulty == Defective \union Byzantine  \* the set of faulty processes
 AllProcs == Corr \union Faulty      \* the set of all processes
 Rounds == 0..MaxRound               \* the set of potential rounds
 NilRound == -1   \* a special value to denote a nil round, outside of Rounds
@@ -326,8 +326,8 @@ Next ==
     \/ OnQuoromOfNilPrevotes(p)
     \/ OnRoundCatchup(p) 
   
-(**************************** FORK ACCOUNTABILITY  ***************************)
-\* a state that has equivocation
+(**************************** FORK SCENARIOS  ***************************)
+\* a state that has at least one equivocation
 Equivocation ==
   \E r \in Rounds:
     \/ \E m1, m2 \in msgsPropose[r]:
@@ -337,8 +337,18 @@ Equivocation ==
     \/ \E m1, m2 \in msgsPrecommit[r]:
       m1 /= m2 /\ m1.src = m2.src
 
+\* equivocation by amnesic processes
+EquivocationBy(p) ==
+  \E r \in Rounds:
+    \/ \E m1, m2 \in msgsPropose[r]:
+      m1.proposal /= m2.proposal /\ m1.src = p /\ m2.src = p
+    \/ \E m1, m2 \in msgsPrevote[r]:
+      m1.id /= m2.id /\ m1.src = p /\ m2.src = p
+    \/ \E m1, m2 \in msgsPrecommit[r]:
+      m1.id /= m2.id /\ m1.src = p /\ m2.src = p
+
 \* amnesic behavior by a process p
-Amnesia(p) ==
+AmnesiaBy(p) ==
     \E r1, r2 \in Rounds:
       /\ r1 < r2
       /\ \E v1, v2 \in ValidValues:
@@ -373,17 +383,22 @@ Validity ==
  
 \* either agreement holds, or the amnesic processes indeed have amnesia
 AgreementOrAmnesia ==
-    Agreement \/ (\A p \in Amnesic: Amnesia(p))
+    Agreement \/ (\A p \in Defective: AmnesiaBy(p))
  
 \* the strong agreement property that also assumes no amnesia
 AgreementNoAmnesia ==
-    Agreement /\ \A p \in Amnesic: ~Amnesia(p)
+    Agreement /\ \A p \in Defective: ~AmnesiaBy(p)
 
-\* the protocol invariant
+(*
+  The protocol safety. Three cases are possible:
+     1. There is no fork, that is, Agreement holds true.
+     2. The amnesic processes have sent equivocal messages.
+     3. The amnesic processes have sent messages that prove amnesia.
+ *)    
 AgreementOrEquivocationOrAmnesia ==
     \/ Agreement
-    \/ Equivocation
-    \/ \A p \in Amnesic: Amnesia(p)
+    \/ \A p \in Defective: EquivocationBy(p)
+    \/ \A p \in Defective: AmnesiaBy(p)
 
 =============================================================================    
  

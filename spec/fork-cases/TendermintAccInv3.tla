@@ -293,12 +293,37 @@ IfValidRoundThenProposal(p) ==
 AllIfValidRoundThenProposal ==
   \A p \in Corr: IfValidRoundThenProposal(p)
 
-(******************************** PROPERTIES  ***************************************)
-InvAndNoEquivocation ==
-    Inv /\ ~Equivocation
-    
-\* use this predicate for the initial states
-TypedInvNoEquivocationNoAmnesia ==
-    TypeOK /\ Inv /\ ~Equivocation /\ (\A p \in Faulty: ~Amnesia(p))
+(******************************** THEOREMS ***************************************)
+(* Under this condition, the faulty processes can decide alone *)
+FaultyQuorum == Cardinality(Faulty) >= THRESHOLD2
+
+(* The standard condition of the Tendermint security model *)
+LessThanThirdFaulty == N > 3 * T /\ Cardinality(Faulty) <= T
+
+(*
+ TypedInv is an inductive invariant, provided that there is no faulty quorum.
+ We run Apalache to prove this theorem only for fixed instances of 4 to 10 processes.
+ (We run Apalache manually, as it does not parse theorem statements at the moment.)
+ To get a parameterized argument, one has to use a theorem prover, e.g., TLAPS.
+ *)
+THEOREM TypedInvIsInductive ==
+    \/ FaultyQuorum \* if there are 2 * T + 1 faulty processes, we give up
+    \//\ Init => TypedInv
+      /\ TypedInv /\ [Next]_vars => TypedInv
+
+(*
+ There should be no fork, when there are less than 1/3 faulty processes.
+ *)
+THEOREM AgreementWhenLessThanThirdFaulty ==
+    LessThanThirdFaulty /\ TypedInv => Agreement
+
+(*
+ In a more general case, when there are less than 2/3 faulty processes,
+ there is either no fork, or two scenarios exist:
+ equivocation by Amnesic, or amnesia by Amnesic.
+ *)
+THEOREM AgreementOrFork ==
+    ~FaultyQuorum /\ TypedInv => AgreementOrEquivocationOrAmnesia
+
 =============================================================================    
  

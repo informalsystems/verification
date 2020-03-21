@@ -1,4 +1,4 @@
------------------------------ MODULE MC_n10_f3 -------------------------------
+----------------------------- MODULE MC_n7_f4 -------------------------------
 CONSTANT Proposer \* the proposer function from 0..NRounds to 1..N
 
 \* the variables declared in TendermintAcc3
@@ -10,11 +10,11 @@ VARIABLES
 a <: b == a
 
 INSTANCE TendermintAccDebug3 WITH
-  Corr <- {"c1", "c2", "c3", "c4", "c5", "c6", "c7"},
-  Defective <- {} <: {STRING},
-  Byzantine <- {"f8", "f9", "f10"},
-  N <- 10,
-  T <- 3,
+  Corr <- {"c1", "c2", "c3"},
+  Defective <- {"f4", "f5"},
+  Byzantine <- {"f6", "f7"},
+  N <- 7,
+  T <- 2,
   ValidValues <- { "v0", "v1" },
   InvalidValues <- {"v2"},
   MaxRound <- 2

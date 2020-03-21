@@ -11,7 +11,7 @@ a <: b == a
 
 INSTANCE TendermintAccDebug3 WITH
   Corr <- {"c1", "c2", "c3", "c4"},
-  Amnesic <- {} <: {STRING},
+  Defective <- {} <: {STRING},
   Byzantine <- {"f5"},
   N <- 5,
   T <- 1,
