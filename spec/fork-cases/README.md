@@ -20,10 +20,16 @@
  of the Tendermint paper: https://arxiv.org/abs/1807.04938
 
  For the purposes of fork accountability, the faulty processes are partitioned
- into two sets: the Byzantine processes and the amnesic processes.
+ into two sets: the Byzantine processes and the defective processes.
  While the Byzantine processes can demonstrate arbitrary behavior, including
- no communication, the amnesic processes send their messages but do not hold
- to the contract of locked values.
+ no communication, the defective processes send their messages but deviate
+ from the protocol in two ways:
+
+   - Equivocation: a defective process may send two different values
+     in the same round.
+
+   - Amnesia: a defective process may lock a value, although it has locked
+     another value in the past.
 
 # TLA+ modules
  
