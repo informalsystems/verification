@@ -3,7 +3,7 @@
  A TLA+ specification of a simplified Tendermint consensus, tuned for
  fork accountability. The simplifications are as follows:
 
- - the procotol runs for one height, that is, one-shot consensus
+ - the protocol runs for one height, that is, it is one-shot consensus
 
  - this specification focuses on safety, so timeouts are modelled with
    with non-determinism
@@ -20,10 +20,16 @@
  of the Tendermint paper: https://arxiv.org/abs/1807.04938
 
  For the purposes of fork accountability, the faulty processes are partitioned
- into two sets: the Byzantine processes and the amnesic processes.
+ into two sets: the Byzantine processes and the defective processes.
  While the Byzantine processes can demonstrate arbitrary behavior, including
- no communication, the amnesic processes send their messages but do not hold
- to the contract of locked values.
+ no communication, the defective processes send their messages but deviate
+ from the protocol in two ways:
+
+   - Equivocation: a defective process may send two different values
+     in the same round.
+
+   - Amnesia: a defective process may lock a value, although it has locked
+     another value in the past.
 
  * Version 3. Modular and parameterized definitions.
  * Version 2. Bugfixes in the spec and an inductive invariant.
