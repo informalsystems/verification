@@ -2,8 +2,8 @@
 #
 # The script to run all experiments at once
 
-SCRIPTS_DIR=~/devl/apalache-tests/scripts \
-    BUILDS="unstable card" \
-    BENCHMARK=001indinv-apalache \
-    RUN_SCRIPT=./run-all.sh \   # alternatively, use ./run-parallel.sh
-    make -e -f ~/devl/apalache-tests/Makefile.common
+export SCRIPTS_DIR=~/devl/apalache-tests/scripts
+export BUILDS="unstable card"
+export BENCHMARK=001indinv-apalache
+export RUN_SCRIPT=./run-all.sh # alternatively, use ./run-parallel.sh
+make -e -f ~/devl/apalache-tests/Makefile.common
