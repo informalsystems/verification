@@ -528,8 +528,6 @@ NoFailuresAndTimeouts ==
     /\ inEvent.type /= "bcNoBlockResponse"
     /\ inEvent.type /= "pcBlockVerificationFailure"
 
-NoGlobalTimeout == inEvent.type /= "tNoAdvanceExp"
-
 \* simulate good peer behavior using this formula. Useful to show termination in the presence of good peers.
 FiniteResponse == inEvent.type
          \in {"bcAddNewPeer", "bcStatusResponse", "bcBlockResponse", "pcBlockProcessed", "rTrySchedule", "tNoAdvanceExp"}
@@ -559,11 +557,11 @@ TerminationWhenNoAdvance ==
 (* 2. GoodTermination - termination when there are no timeouts or failures                       *)
 (*                                                                                               *)
 GoodTermination ==
-  ([]NoGlobalTimeout /\ []NoFailuresAndTimeouts /\ <>[]FiniteResponse)
+  ([]NoFailuresAndTimeouts /\ <>[]FiniteResponse)
      => <>(outEvent.type = "ScFinishedEv" /\ AllRequiredBlocksProcessed)
 
 GoodTerminationPre ==
-  ([]NoGlobalTimeout /\ []NoFailuresAndTimeouts /\ <>[]FiniteResponse)
+  ([]NoFailuresAndTimeouts /\ <>[]FiniteResponse)
      => FALSE
 
 (* ----------------------------------------------------------------------------------------------*)
@@ -587,5 +585,5 @@ TougherTerminationPre ==
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Mar 31 11:42:18 CEST 2020 by ancaz
+\* Last modified Tue Mar 31 11:49:22 CEST 2020 by ancaz
 \* Created Sat Feb 08 13:12:30 CET 2020 by ancaz
