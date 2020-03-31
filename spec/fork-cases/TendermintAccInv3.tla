@@ -31,12 +31,6 @@ AllPrecommits ==
    src: AllProcs,
    round: Rounds,
    id: ValuesOrNil] <: {MT}
-   
-BenignRoundsInMessages(msgfun) ==
-  \* the message function never contains a message for a wrong round
-  \A r \in Rounds:
-    \A m \in msgfun[r]:
-      r = m.round
 
 (* the standard type invariant -- importantly, it is inductive *)
 TypeOK ==
@@ -309,7 +303,7 @@ LessThanThirdFaulty == N > 3 * T /\ Cardinality(Faulty) <= T
 THEOREM TypedInvIsInductive ==
     \/ FaultyQuorum \* if there are 2 * T + 1 faulty processes, we give up
     \//\ Init => TypedInv
-      /\ TypedInv /\ [Next]_vars => TypedInv
+      /\ TypedInv /\ [Next]_vars => TypedInv'
 
 (*
  There should be no fork, when there are less than 1/3 faulty processes.
