@@ -56,7 +56,7 @@ Formally, the statement looks as follows:
 THEOREM TypedInvIsInductive ==
     \/ FaultyQuorum
     \//\ Init => TypedInv
-      /\ TypedInv /\ [Next]_vars => TypedInv
+      /\ TypedInv /\ [Next]_vars => TypedInv'
 ```
 
 When over two-thirds of processes are faulty, `TypedInv` is not inductive.
@@ -85,7 +85,9 @@ THEOREM AgreementOrFork ==
 
 # Model checking results   
 
-TODO
+Check the report on [model checking with Apalache](./results/001indinv-apalache-report.md).
+
+TODO: re-run the experiments with the updates introduced during the dev session.
 
 # Running the experiments
 
