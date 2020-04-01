@@ -31,6 +31,9 @@
    - Amnesia: a defective process may lock a value, although it has locked
      another value in the past.
 
+ TODO: as there is no clear difference between Byzantine and Defective processes anymore,
+ we will probably merge them together.
+
  * Version 3. Modular and parameterized definitions.
  * Version 2. Bugfixes in the spec and an inductive invariant.
  * Version 1. A preliminary specification.
@@ -45,7 +48,7 @@ CONSTANTS
     Corr,          \* the set of correct processes 
     Defective,     \* the set of processes that show defects, e.g, amnesia or equivocation
     Byzantine,     \* the set of Byzantine processes, may be empty
-    N,             \* the total number of processes: correct, amnesic, and Byzantine
+    N,             \* the total number of processes: correct, defective, and Byzantine
     T,             \* an upper bound on the number of Byzantine processes
     ValidValues,   \* the set of valid values, proposed both by correct and faulty
     InvalidValues, \* the set of invalid values, never proposed by the correct ones
@@ -117,13 +120,29 @@ FaultyProposals(r) ==
     SetOfMsgs([type: {"PROPOSAL"}, src: Faulty,
                round: {r}, proposal: Values, validRound: RoundsOrNil])
 
+AllFaultyProposals ==
+    SetOfMsgs([type: {"PROPOSAL"}, src: Faulty,
+               round: Rounds, proposal: Values, validRound: RoundsOrNil])
+
 FaultyPrevotes(r) ==
     SetOfMsgs([type: {"PREVOTE"}, src: Faulty, round: {r}, id: Values])
+
+AllFaultyPrevotes ==    
+    SetOfMsgs([type: {"PREVOTE"}, src: Faulty, round: Rounds, id: Values])
 
 FaultyPrecommits(r) ==
     SetOfMsgs([type: {"PRECOMMIT"}, src: Faulty, round: {r}, id: Values])
 
-\* The initial states of the protocol. The faults can be in the system already.
+AllFaultyPrecommits ==
+    SetOfMsgs([type: {"PRECOMMIT"}, src: Faulty, round: Rounds, id: Values])
+   
+BenignRoundsInMessages(msgfun) ==
+  \* the message function never contains a message for a wrong round
+  \A r \in Rounds:
+    \A m \in msgfun[r]:
+      r = m.round
+
+\* The initial states of the protocol. Some faults can be in the system already.
 Init ==
     /\ round = [p \in Corr |-> 0]
     /\ step = [p \in Corr |-> "PROPOSE"]
@@ -132,9 +151,12 @@ Init ==
     /\ lockedRound = [p \in Corr |-> NilRound]
     /\ validValue = [p \in Corr |-> NilValue]
     /\ validRound = [p \in Corr |-> NilRound]
-    /\ msgsPropose = [r \in Rounds |-> FaultyProposals(r)]
-    /\ msgsPrevote = [r \in Rounds |-> FaultyPrevotes(r)]
-    /\ msgsPrecommit = [r \in Rounds |-> FaultyPrecommits(r)]
+    /\ msgsPropose \in [Rounds -> SUBSET AllFaultyProposals]
+    /\ msgsPrevote \in [Rounds -> SUBSET AllFaultyPrevotes]
+    /\ msgsPrecommit \in [Rounds -> SUBSET AllFaultyPrecommits]
+    /\ BenignRoundsInMessages(msgsPropose)
+    /\ BenignRoundsInMessages(msgsPrevote)
+    /\ BenignRoundsInMessages(msgsPrecommit)
     /\ evidence = EmptyMsgSet
 
 (************************ MESSAGE PASSING ********************************)
@@ -400,11 +422,26 @@ AgreementNoAmnesia ==
      1. There is no fork, that is, Agreement holds true.
      2. The amnesic processes have sent equivocal messages.
      3. The amnesic processes have sent messages that prove amnesia.
+
+  This property seems to be unrealistic. See AgreementOrEquivocationOrAmnesia.
  *)    
-AgreementOrEquivocationOrAmnesia ==
+AgreementOrEquivocationOrAmnesiaOld ==
     \/ Agreement
     \/ \A p \in Defective: EquivocationBy(p)
     \/ \A p \in Defective: AmnesiaBy(p)
+
+(*
+  The protocol safety. Two cases are possible:
+     1. There is no fork, that is, Agreement holds true.
+     2. A subset of faulty processes demonstrates equivocation or amnesia.
+ *)
+AgreementOrEquivocationOrAmnesia ==
+    \/ Agreement
+    \/ \E Detectable \in SUBSET Faulty:
+        /\ Cardinality(Detectable) >= THRESHOLD1
+        /\ \A p \in Detectable:
+            EquivocationBy(p) \/ AmnesiaBy(p)
+
 
 =============================================================================    
  
