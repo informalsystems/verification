@@ -288,7 +288,7 @@ handleRemovePeer ==
           ELSE 
             UNCHANGED outEvent
   /\ IF finishSc(outEvent') THEN
-       scRunning = FALSE
+       scRunning' = FALSE
      ELSE UNCHANGED scRunning
 
 handleStatusResponse ==
@@ -365,7 +365,7 @@ handleBlockProcessed ==
             ELSE
               outEvent' = noEvent
   /\ IF finishSc(outEvent') THEN
-       scRunning = FALSE
+       scRunning' = FALSE
      ELSE UNCHANGED scRunning
 
 handleBlockProcessError ==
@@ -382,13 +382,14 @@ handleBlockProcessError ==
                outEvent' = noEvent
           /\ scheduler' = res2.val
   /\ IF finishSc(outEvent') THEN
-       scRunning = FALSE
+       scRunning' = FALSE
      ELSE UNCHANGED scRunning
 
 handleNoAdvanceExp ==
     /\ inEvent.type = "tNoAdvanceExp"
     /\ outEvent' = [type |-> "scFinishedEv", error |-> "timeout"]
-    /\ UNCHANGED <<scheduler, scRunning>>
+    /\ scRunning' = FALSE
+    /\ UNCHANGED <<scheduler>>
 
 NextSc ==
   IF ~scRunning THEN
@@ -529,8 +530,10 @@ NoFailuresAndTimeouts ==
     /\ inEvent.type /= "pcBlockVerificationFailure"
 
 \* simulate good peer behavior using this formula. Useful to show termination in the presence of good peers.
-FiniteResponse == inEvent.type
-         \in {"bcAddNewPeer", "bcStatusResponse", "bcBlockResponse", "pcBlockProcessed", "rTrySchedule", "tNoAdvanceExp"}
+GoodResponse ==
+  \/ inEvent.type
+         \in {"bcAddNewPeer", "bcStatusResponse", "bcBlockResponse", "pcBlockProcessed", "rTrySchedule"}
+  \/ ~envRunning
 
 \* all blocks from initHeight up to max peer height have been processed
 AllRequiredBlocksProcessed ==
@@ -539,7 +542,7 @@ AllRequiredBlocksProcessed ==
   scheduler.height >= maxH /\ Cardinality(processedBlocks) = scheduler.height - scheduler.initHeight
 
 IncreaseHeight ==
-  scheduler'.height > scheduler.height \/ scheduler'.height >= ultimateHeight
+  (scheduler'.height > scheduler.height) \/ (scheduler.height >= ultimateHeight)
 
 (* ----------------------------------------------------------------------------------------------*)
 (* Expected properties                                                                           *)
@@ -554,36 +557,46 @@ TerminationWhenNoAdvance ==
 
 (* ----------------------------------------------------------------------------------------------*)
 (*                                                                                               *)
-(* 2. GoodTermination - termination when there are no timeouts or failures                       *)
+(* 2. TerminationGoodPeers -                                                                     *)
+(*     termination when IncreaseHeight holds true, fastsync is progressing, all blocks processed *)
 (*                                                                                               *)
-GoodTermination ==
-  ([]NoFailuresAndTimeouts /\ <>[]FiniteResponse)
-     => <>(outEvent.type = "ScFinishedEv" /\ AllRequiredBlocksProcessed)
+TerminationGoodPeers ==
+ (/\ scheduler.height < ultimateHeight
+  /\ <>[]GoodResponse
+  /\[]<>(<<IncreaseHeight>>_<<scheduler, turn>>)
+ )
+    => <>(outEvent.type = "scFinishedEv" /\ AllRequiredBlocksProcessed)
 
-GoodTerminationPre ==
-  ([]NoFailuresAndTimeouts /\ <>[]FiniteResponse)
-     => FALSE
+\* Make sure that the precondition is not always FALSE.
+TerminationGoodPeersPre ==
+ (/\ scheduler.height < ultimateHeight
+  /\ <>[]GoodResponse
+  /\[]<>(<<IncreaseHeight>>_<<scheduler, turn>>)
+ )
+    => FALSE
 
 (* ----------------------------------------------------------------------------------------------*)
-(*                                                                                               *)
-(* 3. TougherTermination - termination when IncreaseHeight holds true, fastsync is progressing   *)
-(*                                                                                               *)  
-TougherTermination ==
+(* 3. TerminationAllCases -                                                                      *)
+(*     any peer behavior, either terminates with all blocks processed or times out               *)
+TerminationAllCases ==
  (/\ scheduler.height < ultimateHeight
-  /\ <>[]FiniteResponse
-  /\(([]<> (<<IncreaseHeight>>_scheduler)) \/ <>(inEvent.type = "tNoAdvanceExp"))
+  /\(([]<> (<<IncreaseHeight>>_<<scheduler, turn>>)) \/ <>(inEvent.type = "tNoAdvanceExp"))
  )
-    => <>(outEvent.type = "ScFinishedEv" /\ AllRequiredBlocksProcessed)
+    => <>(outEvent.type = "scFinishedEv" /\ (AllRequiredBlocksProcessed \/ outEvent.error = "timeout"))
 
-(* Make sure that the precondition is not always FALSE *)
-TougherTerminationPre ==
+\* Make sure that the precondition is not always FALSE.
+TerminationAllCasesPre ==
  (/\ scheduler.height < ultimateHeight
-  /\ <>[]FiniteResponse
-  /\(([]<> (<<IncreaseHeight>>_scheduler)) \/ <>(inEvent.type = "tNoAdvanceExp"))
+  /\(([]<> (<<IncreaseHeight>>_<<scheduler, turn>>)) \/ <>(inEvent.type = "tNoAdvanceExp"))
  )
+    => FALSE
+
+\* This will give an example of increasing heights in the scheduler
+SchedulerIncreasePre ==
+[]<>(<<IncreaseHeight>>_<<scheduler, turn>>)
     => FALSE
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Mar 31 11:49:22 CEST 2020 by ancaz
+\* Last modified Fri Apr 03 15:22:58 CEST 2020 by ancaz
 \* Created Sat Feb 08 13:12:30 CET 2020 by ancaz
