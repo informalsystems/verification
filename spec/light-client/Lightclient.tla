@@ -1,7 +1,7 @@
 ---------------------------- MODULE Lightclient ----------------------------
 (*
  * A state-machine specification of the lite client, following the English spec:
- * https://github.com/tendermint/tendermint/blob/master/docs/spec/consensus/light-client.md
+ * https://github.com/tendermint/spec/tree/master/spec/consensus/light-client
  *
  * Whereas the English specification presents the lite client as a piece of sequential code,
  * which contains non-tail recursion, we specify a state machine that explicitly has

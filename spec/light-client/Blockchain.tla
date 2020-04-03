@@ -235,11 +235,19 @@ NextVSNonEmpty ==
 (* Check this to see how the blockchain can jump into the faulty zone *)
 NeverFaulty == ~tooManyFaults
 
+(* check this to see how the trusted period can expire *)
+NeverUltimateHeight ==
+  minTrustedHeight < ULTIMATE_HEIGHT
+
 (* False: it should be always possible to add one more block *)
 NeverStuckFalse1 ==
   ENABLED AdvanceChain
 
 (* False: it should be always possible to add one more block *)
+(*
+   TODO: this property is not false anymore, it is possible to add a block after
+   the trusted period has expired!
+ *)
 NeverStuckFalse2 ==
   \/ tooManyFaults
   \/ height = ULTIMATE_HEIGHT
