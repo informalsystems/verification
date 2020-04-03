@@ -11,20 +11,20 @@ We assume a system in which one node is trying to sync with the blockchain
 (part of the block) agaings the application, and the set of full nodes 
 (we call them peers) that are block providers.
 
-Peers can be faulty, and we don't make any assumption about rate of correct/faulty nodes in the
-node peerset (i.e., they can all be faulty). Processes (client and peers) communicate
-by message passing. They exchange the following messages:
+Peers can be faulty, and we don't make any assumption about rate of correct/faulty 
+nodes in the node peerset (i.e., they can all be faulty). Correct peers are part 
+of the replicated state machine, i.e., they manage blockchain and execute 
+transactions against the same deterministic application A. We don't make any 
+assumptions about behavior of faulty processes. Processes (client and peers) 
+communicate by message passing. They exchange the following messages:
 
 - StatusRequest
 - StatusReply
 - BlockRequest
 - BlockReply
  
-Correct peers are part of the replicated state machine, i.e., they manage
-blockchain and execute transactions against the same deterministic application A.
-We assume Tendermint failure model, i.e., given a trusted header h, we assume that >2/3 of voting power will behave
-correctly until time h.Time + TRUSTED_PERIOD. We don't make any assumptions about behavior of faulty processes.
 
+TODO: Update this part 
 In this spec we assume a simpler problem (compared to complete fast-sync) defined with the following assumptions: 
 
 - node is initialised with a set of peers with which messages can be exchanged
@@ -69,12 +69,25 @@ HeightsPlus == 1..MAX_HEIGHT+1
 \* the set of all peer ids the node can receive a message from
 AllPeerIds == CORRECT \union FAULTY
 
-Blocks == [height: Heights, wellFormed: BOOLEAN, lastCommit: BOOLEAN]
+\* the set of potential blocks ids. For simplification, correct blocks id would be equal to block height
+BlockIds == Heights
+
+\* correct last commit have enough voting power, i.e., +2/3 of the voting power of 
+\* the corresponding validator set (enoughVotingPower = TRUE) that signs blockId.
+\* BlockId defines correct previous block (in practice it is the hash of the block). 
+\* For simplicity, we model blockId as the height of the previous block.  
+LastCommits == [blockId: BlockIds, enoughVotingPower: BOOLEAN]
+
+CorrectLastCommit(h) == [blockId |-> h-1, enoughVotingPower |-> TRUE]
+
+NilCommit == [blockId |-> 0, enoughVotingPower |-> TRUE]
+
+Blocks == [height: Heights, lastCommit: LastCommits, wellFormed: BOOLEAN]
 
 \* correct node will create always valid blocks, i.e., wellFormed = true and lastCommit = true. 
-CorrectBlock(h) == [height |-> h, wellFormed |-> TRUE, lastCommit |-> TRUE]
+CorrectBlock(h) == [height |-> h, lastCommit |-> CorrectLastCommit(h), wellFormed |-> TRUE]
 
-NilBlock == [height |-> 0, wellFormed |-> TRUE, lastCommit |-> TRUE]
+NilBlock == [height |-> 0, lastCommit |-> NilCommit, wellFormed |-> TRUE]
 
 \* a special value for an undefined height
 NilHeight == 0
@@ -117,7 +130,8 @@ VARIABLES
  VARIABLES
   turn,                                     \* who is taking the turn: "Peers" or "Node" 
   inMsg,
-  outMsg   
+  outMsg,
+  nonDetFlag                                \* variable that non-deterministically takes values from the set BOOLEAN    
   
   
 (* the variables of the node *)  
@@ -130,6 +144,7 @@ InMsgs ==
     [type: {"statusResponse"}, peerId: AllPeerIds, height: Heights]
         \union
     [type: {"blockResponse"}, peerId: AllPeerIds, block: Blocks]
+        
 
 FaultyInMsgs ==
     [type: {"statusResponse"}, peerId: FAULTY, height: Heights]
@@ -139,7 +154,7 @@ FaultyInMsgs ==
 OutMsgs ==
     {NoMsg}
         \union
-    [type: {"statusRequest"}, peerIds: SUBSET AllPeerIds \ {}] \* NOTE: peerIds is a set of ids    
+    [type: {"statusRequest"}, peerIds: SUBSET AllPeerIds \ {{}}] \* NOTE: peerIds is a set of ids    
         \union  
     [type: {"blockRequest"}, peerId: AllPeerIds, height: Heights]  
         
@@ -147,27 +162,17 @@ OutMsgs ==
 (********************************** NODE ***********************************)
 
 InitNode == 
-    \E startHeight \in Heights: 
-        \E pIds \in SUBSET AllPeerIds:
-        /\ pIds /= {}
-        /\ startHeight <= MAX_HEIGHT - 1
+     \E pIds \in SUBSET AllPeerIds \ {{}}:
         /\ blockPool = [
-                height |-> startHeight,
+                height |-> 1,
                 peerIds |-> pIds, 
                 peerHeights |-> [p \in AllPeerIds |-> NilHeight],     \* no peer height is known
                 blockStore |-> [h \in HeightsPlus |-> NilBlock],
                 receivedBlocks |-> [h \in Heights |-> NilPeer],
-                pendingBlocks |-> [h \in Heights |-> NilPeer] 
+                pendingBlocks |-> [h \in Heights |-> NilPeer]
            ]
        /\ state = "running" 
-       
-
-\* using this operator we capture assumption that correct processes always respond timely
-MsgOnTime(msg, randomFlag) == 
-    IF msg.peerId \in CORRECT 
-    THEN TRUE 
-    ELSE randomFlag  
-    
+           
 \* Remove faulty peer.
 \* Returns new block pool. If the peer is alredy removed, returns input value.  
 RemovePeer(peer, bPool) ==       
@@ -190,36 +195,59 @@ RemovePeer(peer, bPool) ==
             !.blockStore = bStore
           ]                              
     ELSE bPool
+
+\* Remove faulty peers.
+\* Returns new block pool. 
+RemovePeers(peers, bPool) ==       
+    LET pIds == bPool.peerIds \ peers IN
+    LET pHeights == 
+        [p \in AllPeerIds |-> IF p \in peers THEN NilHeight ELSE bPool.peerHeights[p]] IN 
+    LET failedRequests == {h \in Heights: h >= bPool.height /\ bPool.pendingBlocks[h] \in peers} IN
+    LET pBlocks == 
+    [h \in Heights |-> IF h \in failedRequests THEN NilPeer ELSE bPool.pendingBlocks[h]] IN  
+    LET rBlocks == 
+    [h \in Heights |-> IF h \in failedRequests THEN NilPeer ELSE bPool.receivedBlocks[h]] IN
+    LET bStore == 
+    [h \in Heights |-> IF h \in failedRequests THEN NilBlock ELSE bPool.blockStore[h]] IN  
+    
+    IF pIds /= bPool.peerIds     
+    THEN [bPool EXCEPT 
+            !.peerIds = pIds,
+            !.peerHeights = pHeights,
+            !.pendingBlocks = pBlocks,
+            !.receivedBlocks = rBlocks,
+            !.blockStore = bStore
+          ]                              
+    ELSE bPool
+
      
-\* If valid (and timely) status response, update peerHeights.
-\* If invalid message, then remove peer.
+\* If valid status response, update peerHeights.
+\* If invalid (height is smaller than the current), then remove peer.
 \* Returns new block pool.                             
-HandleStatusResponse(msg, bPool, randomFlag) == 
+HandleStatusResponse(msg, bPool) == 
     LET peerHeight == bPool.peerHeights[msg.peerId] IN     
     IF /\ msg.peerId \in bPool.peerIds 
-       /\ MsgOnTime(msg, randomFlag)
        /\ msg.height >= peerHeight  
-    THEN    \* a correct and timely response 
+    THEN    \* a correct response 
         LET pHeights == [bPool.peerHeights EXCEPT ![msg.peerId] = msg.height] IN
         [bPool EXCEPT !.peerHeights = pHeights]                   
-    ELSE RemovePeer(msg.peerId, bPool)   \* the peer has sent us duplicate status message or not on time or it was not solicited response
+    ELSE RemovePeer(msg.peerId, bPool)   \* the peer has sent us message with smaller height or peer is not in our peer list
         
         
-HandleBlockResponse(msg, bPool, randomFlag) == 
+HandleBlockResponse(msg, bPool) ==      
     LET h == msg.block.height IN
     IF /\ msg.peerId \in bPool.peerIds
        /\ bPool.blockStore[h] = NilBlock 
-       /\ bPool.pendingBlocks[h] = msg.peerId 
-       /\ MsgOnTime(msg, randomFlag)  
-    THEN LET bStore == [bPool.blockStore EXCEPT ![h] = msg.block] IN 
-         LET rBlocks == [bPool.receivedBlocks EXCEPT![h] = msg.peerId] IN   
-         [bPool EXCEPT 
-            !.blockStore = bStore,
-            !.receivedBlocks = rBlocks
+       /\ bPool.pendingBlocks[h] = msg.peerId
+       /\ msg.block.wellFormed   
+    THEN  
+        [bPool EXCEPT 
+            !.blockStore = [bPool.blockStore EXCEPT ![h] = msg.block],
+            !.receivedBlocks = [bPool.receivedBlocks EXCEPT![h] = msg.peerId],
+            !.pendingBlocks = [bPool.pendingBlocks EXCEPT![h] = NilPeer]         
          ]  
     ELSE RemovePeer(msg.peerId, bPool)
                        
-
 MaxPeerHeight(bPool) == 
     IF bPool.peerIds = {}
     THEN 0 \* no peers, just return 0
@@ -268,7 +296,9 @@ FindPeerToServe(bPool, h) ==
     IF \/ peersThatCanServe = {} 
        \/ Cardinality(pendingBlocks) > TARGET_PENDING 
     THEN NilPeer 
-    ELSE CHOOSE p \in peersThatCanServe: TRUE    \* TODO: Maybe introduce nondeterminism for peer selection
+    ELSE CHOOSE p \in peersThatCanServe: \A q \in peersThatCanServe:
+            /\ NumOfPendingRequests(bPool, p) <= NumOfPendingRequests(bPool, q) 
+            /\ p < q
     
        
 \* Make a request for a block (if possible) and returns request message and block poool.
@@ -287,30 +317,18 @@ CreateRequest(bPool) ==
         
 
 \* Returns node state, i.e., defines termination condition. 
-GetState(bPool) == 
-    IF /\ \/ bPool.height < MaxPeerHeight(bPool) 
-          \/ MaxPeerHeight(bPool) = 0 
-       
-       /\ bPool.peerIds /= {}  
-    THEN "running" 
-    ELSE "finished" 
-
-
-(*
-    - block bStore[bPool.height - 1] is trusted block and it defines next validator set that is executing block at bPool.height
-    - last commit for the block at height bPool.height is part of the block at height bPool.height + 1
-    - validity of last commit for block at bPool.height therefore depends on the block bStore[bPool.height - 1]. It consists in verifying
-      if > 2/3 of the voting power of the trusted validator set has signed it.
-    - block at height h is valid if it is wellformed and if last commit from the block at height h+1 is valid and signs the block at height h
-*)
-
-IsValidCommit(trustedBlock, block) ==
-    /\ trustedBlock.height = block.height - 2 
-    /\ block.lastCommit
-    
-IsValidBlock(trustedCommit, block) == 
-    /\ trustedCommit 
-    /\ block.wellFormed
+GetState(bPool, heightIncrease) == 
+    IF ~heightIncrease /\ nonDetFlag  \* corresponds to the syncTimeout in case no progress has been made for a period of time.
+    THEN "finished"
+    ELSE IF /\ bPool.height > 1 
+            /\ bPool.height >= MaxPeerHeight(bPool) \* see https://github.com/tendermint/tendermint/blob/61057a8b0af2beadee106e47c4616b279e83c920/blockchain/v2/scheduler.go#L566
+         THEN "finished" 
+         ELSE "running"      
+         
+(* See https://github.com/tendermint/tendermint/blob/61057a8b0af2beadee106e47c4616b279e83c920/blockchain/v2/processor_context.go#L12 *)
+VerifyCommit(blockId, lastCommit) == 
+    /\ blockId = lastCommit.blockId
+    /\ lastCommit.enoughVotingPower     
     
 \* Tries to execute next block in the pool, i.e., defines block validation logic. 
 \* Returns new block pool (peers that has send invalid blocks are removed).
@@ -321,33 +339,61 @@ ExecuteBlocks(bPool) ==
     
     IF block1 = NilBlock \/ block2 = NilBlock \* we don't have two next consequtive blocks
     THEN bPool   
-    ELSE IF bPool.height > 1 /\ ~IsValidCommit(bStore[bPool.height - 1], block2) 
-         THEN RemovePeer(bPool.receivedBlocks[block2.height], bPool)
-         ELSE IF IsValidBlock(block2.lastCommit, block1)
-              THEN \* all good, execute block at position height
-                 [bPool EXCEPT !.height = bPool.height + 1]
-              ELSE  
-                 RemovePeer(bPool.receivedBlocks[block1.height], bPool)        
-
+    ELSE IF bPool.height > 1 /\ ~VerifyCommit(block1.blockId, block2.lastCommit) 
+         THEN RemovePeers(bPool, {bPool.receivedBlocks[block1.height], bPool.receivedBlocks[block2.height]})
+         ELSE  \* all good, execute block at position height
+            [bPool EXCEPT !.height = bPool.height + 1]
               
-HandleResponse(msg, bPool, randomFlag) == 
+              
+TryPrunePeer(bPool) ==    
+    (* -----------------------------------------------------------------------------------------------------------------------*)
+    (* Corresponds to function prunablePeers the in scheduler.go file. Note that this function only checks if block has been  *)
+    (* received from a peer during peerTimeout period.                                                                        *)
+    (* Note that in case no request has been scheduled to a correct peer, or a request has been scheduled                     *)
+    (* recently, so the peer hasn't responded yet, a peer will be removed as no block is received within peerTimeout.         *)
+    (* In case of faulty peers, we don't have any guarantee that they will respond.                                           *)
+    (* Therefore, we model this with nondeterministic behavior as it could lead to peer removal, for both correct and faulty. *)
+    (* See scheduler.go                                                                                                       *)
+    (* https://github.com/tendermint/tendermint/blob/4298bbcc4e25be78e3c4f21979d6aa01aede6e87/blockchain/v2/scheduler.go#L335 *)
+    LET toRemovePeers == IF nonDetFlag THEN bPool.peerIds ELSE {} IN
+       
+    (*
+      Corresponds to logic for pruning a peer that is responsible for delivering block for the next height.
+      See scheduler.go     
+      https://github.com/tendermint/tendermint/blob/4298bbcc4e25be78e3c4f21979d6aa01aede6e87/blockchain/v2/scheduler.go#L617    
+    *)
+    LET nextHeightPeer == bPool.pendingBlocks[bPool.height] IN
+    LET prunablePeers == 
+        IF /\ nextHeightPeer /= NilPeer
+           /\ nextHeightPeer \in FAULTY
+           /\ nonDetFlag 
+        THEN toRemovePeers \union {nextHeightPeer} 
+        ELSE toRemovePeers
+    IN
+    RemovePeers(prunablePeers, bPool)
+    
+
+
+HandleResponse(msg, bPool) == 
     IF msg = NoMsg 
     THEN bPool
     ELSE IF msg.type = "statusResponse" 
-        THEN HandleStatusResponse(msg, bPool, randomFlag)
-        ELSE HandleBlockResponse(msg, bPool, randomFlag)
+        THEN HandleStatusResponse(msg, bPool)
+        ELSE IF msg.type = "blockResponse" 
+             THEN HandleBlockResponse(msg, bPool)
+             ELSE bPool 
     
 NodeStep ==
-   \E randomFlag \in BOOLEAN:
-        LET bPool == HandleResponse(inMsg, blockPool, randomFlag) IN
-        LET nbPool == ExecuteBlocks(bPool) IN
-        LET msgAndPool == CreateRequest(nbPool) IN 
-        LET nstate == GetState(msgAndPool.pool) IN
+   LET bPool == HandleResponse(inMsg, blockPool) IN
+   LET bp == TryPrunePeer(bPool) IN
+   LET nbPool == ExecuteBlocks(bp) IN
+   LET msgAndPool == CreateRequest(nbPool) IN 
+   LET nstate == GetState(msgAndPool.pool, blockPool.height < nbPool.height) IN
    
-        /\ state' = nstate
-        /\ blockPool' = msgAndPool.pool
-        /\ outMsg' = msgAndPool.msg
-        /\ inMsg' = NoMsg
+   /\ state' = nstate
+   /\ blockPool' = msgAndPool.pool
+   /\ outMsg' = msgAndPool.msg
+   /\ inMsg' = NoMsg
                             
                 
 \* If node is running, then in every step we try to create blockRequest.
@@ -469,6 +515,7 @@ Init ==
     /\ turn = "Peers"
     /\ inMsg = NoMsg
     /\ outMsg = [type |-> "statusRequest", peerIds |-> blockPool.peerIds]
+    /\ nonDetFlag \in BOOLEAN
     
 \* AwesomeInit == Init /\ blockPool.peerIds = {1,4}     
     
@@ -477,10 +524,12 @@ Next ==
     THEN
         /\ NextPeers
         /\ turn' = "Node"
+        /\ nonDetFlag' \in BOOLEAN
         /\ UNCHANGED nvars
     ELSE
         /\ NextNode
         /\ turn' = "Peers"
+        /\ nonDetFlag' \in BOOLEAN
         /\ UNCHANGED peersState  
 
 
@@ -543,5 +592,5 @@ StateNotFinished ==
           
 \*=============================================================================
 \* Modification History
-\* Last modified Tue Feb 25 18:17:48 CET 2020 by zarkomilosevic
+\* Last modified Fri Apr 03 18:04:57 CEST 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
