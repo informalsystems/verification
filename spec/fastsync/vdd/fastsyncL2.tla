@@ -35,7 +35,7 @@ As part of the fast sync protocols node and the peers exchange the following mes
 
 A node is peridically issuing StatusRequets to query peers for their current height (to decide what 
 blocks to ask from what peers). Based on StatusReplies (that are sent by peers), the node queries 
-blocks for some height(s) by sending them BlockRequest messages. A peer provides asked block by
+blocks for some height(s) by sending them BlockRequest messages. A peer provides a requested block by
 BlockResponse message. In addition to those messages, a node in this spec receives additional
 input messages (events):
 
