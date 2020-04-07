@@ -217,7 +217,7 @@ RemovePeer(peer, bPool) ==
 
 \* Remove faulty peers.
 \* Returns new block pool. 
-RemovePeers(peers, bPool) ==       
+RemoveManyPeers(peers, bPool) ==       
     LET pIds == bPool.peerIds \ peers IN
     LET pHeights == 
         [p \in AllPeerIds |-> IF p \in peers THEN NilHeight ELSE bPool.peerHeights[p]] IN 
@@ -337,7 +337,7 @@ FindPeerToServe(bPool, h) ==
     \* pick a peer that can serve request for height h that has minimum number of pending requests
     ELSE CHOOSE p \in peersThatCanServe: \A q \in peersThatCanServe:       
             /\ NumOfPendingRequests(bPool, p) <= NumOfPendingRequests(bPool, q) 
-            /\ p <= q
+            \*/\ p <= q \* otherwise, TLC reports an error in CHOOSE
     
        
 \* Make a request for a block (if possible) and returns a request message and block poool.
@@ -382,7 +382,7 @@ ExecuteBlocks(bPool) ==
     IF block1 = NilBlock \/ block2 = NilBlock \* we don't have two next consequtive blocks
     THEN bPool   
     ELSE IF bPool.height > 1 /\ ~VerifyCommit(block1, block2.lastCommit) 
-         THEN RemovePeers(bPool, {bPool.receivedBlocks[block1.height], bPool.receivedBlocks[block2.height]})
+         THEN RemoveManyPeers({bPool.receivedBlocks[block1.height], bPool.receivedBlocks[block2.height]}, bPool)
          ELSE  \* all good, execute block at position height
             [bPool EXCEPT !.height = bPool.height + 1]
               
@@ -415,7 +415,7 @@ TryPrunePeer(bPool, nonDetSet) ==
         THEN toRemovePeers \union {nextHeightPeer} 
         ELSE toRemovePeers
     IN
-    RemovePeers(prunablePeers, bPool)
+    RemoveManyPeers(prunablePeers, bPool)
     
 
 \* Handle SyncTimeout. It models if progress has been made (height has increased) since the last SyncTimeout event.
@@ -679,5 +679,6 @@ StateNotFinished ==
           
 \*=============================================================================
 \* Modification History
+\* Last modified Tue Apr 07 23:49:10 CEST 2020 by igor
 \* Last modified Tue Apr 07 15:58:26 CEST 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
