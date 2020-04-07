@@ -367,9 +367,9 @@ GetState(bPool) ==
          
 (* Verify if commit is for the given block id and if commit has enough voting power. 
    See https://github.com/tendermint/tendermint/blob/61057a8b0af2beadee106e47c4616b279e83c920/blockchain/v2/processor_context.go#L12 *)
-VerifyCommit(blockId, lastCommit) == 
+VerifyCommit(block, lastCommit) == 
     /\ lastCommit.enoughVotingPower     
-    /\ lastCommit.blockId = blockId 
+    /\ lastCommit.blockId = block.height 
 
 
 (* Tries to execute next block in the pool, i.e., defines block validation logic. 
@@ -381,7 +381,7 @@ ExecuteBlocks(bPool) ==
     
     IF block1 = NilBlock \/ block2 = NilBlock \* we don't have two next consequtive blocks
     THEN bPool   
-    ELSE IF bPool.height > 1 /\ ~VerifyCommit(block1.blockId, block2.lastCommit) 
+    ELSE IF bPool.height > 1 /\ ~VerifyCommit(block1, block2.lastCommit) 
          THEN RemovePeers(bPool, {bPool.receivedBlocks[block1.height], bPool.receivedBlocks[block2.height]})
          ELSE  \* all good, execute block at position height
             [bPool EXCEPT !.height = bPool.height + 1]
@@ -679,5 +679,5 @@ StateNotFinished ==
           
 \*=============================================================================
 \* Modification History
-\* Last modified Tue Apr 07 13:36:57 CEST 2020 by zarkomilosevic
+\* Last modified Tue Apr 07 15:58:26 CEST 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
