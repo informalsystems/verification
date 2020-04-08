@@ -35,7 +35,7 @@ As part of the fast sync protocols node and the peers exchange the following mes
 
 A node is periodically issuing StatusRequests to query peers for their current height (to decide what
 blocks to ask from what peers). Based on StatusReplies (that are sent by peers), the node queries 
-blocks for some height(s) by sending them BlockRequest messages. A peer provides asked block by
+blocks for some height(s) by sending them BlockRequest messages. A peer provides a requested block by
 BlockResponse message. In addition to those messages, a node in this spec receives additional
 input messages (events):
 
@@ -217,7 +217,7 @@ RemovePeer(peer, bPool) ==
 
 \* Remove faulty peers.
 \* Returns new block pool. 
-RemovePeers(peers, bPool) ==       
+RemoveManyPeers(peers, bPool) ==
     LET pIds == bPool.peerIds \ peers IN
     LET pHeights == 
         [p \in AllPeerIds |-> IF p \in peers THEN NilHeight ELSE bPool.peerHeights[p]] IN 
@@ -291,7 +291,7 @@ MaxPeerHeight(bPool) ==
     IF bPool.peerIds = {}
     THEN 0 \* no peers, just return 0
     ELSE LET Hts == {bPool.peerHeights[p] : p \in bPool.peerIds} IN
-           CHOOSE max \in Hts: \A h \in Hts: h <= max 
+           CHOOSE max \in Hts: \A h \in Hts: h <= max
 
 (* Returns next height for which request should be sent.
    Returns NilHeight in case there is no height for which request can be sent.  *)
@@ -336,8 +336,7 @@ FindPeerToServe(bPool, h) ==
     \* pick a peer that can serve request for height h that has minimum number of pending requests
     ELSE CHOOSE p \in peersThatCanServe: \A q \in peersThatCanServe:       
             /\ NumOfPendingRequests(bPool, p) <= NumOfPendingRequests(bPool, q) 
-            /\ p <= q
-    
+
        
 \* Make a request for a block (if possible) and returns a request message and block poool.
 CreateRequest(bPool) ==
@@ -356,8 +355,8 @@ CreateRequest(bPool) ==
         
 
 \* Returns node state, i.e., defines termination condition. 
-ComputeNextState(bPool) == 
-    IF bPool.syncedBlocks = 0    \* corresponds to the syncTimeout in case no progress has been made for a period of time.
+GetState(bPool) == 
+    IF bPool.syncedBlocks = 0 /\ bPool.syncHeight /= 1 \* corresponds to the syncTimeout in case no progress has been made for a period of time.
     THEN "finished"
     ELSE IF /\ bPool.height > 1 
             /\ bPool.height >= MaxPeerHeight(bPool) \* see https://github.com/tendermint/tendermint/blob/61057a8b0af2beadee106e47c4616b279e83c920/blockchain/v2/scheduler.go#L566
@@ -381,7 +380,7 @@ ExecuteBlocks(bPool) ==
     IF block1 = NilBlock \/ block2 = NilBlock \* we don't have two next consequtive blocks
     THEN bPool   
     ELSE IF bPool.height > 1 /\ ~VerifyCommit(block1, block2.lastCommit) 
-         THEN RemovePeers(bPool, {bPool.receivedBlocks[block1.height], bPool.receivedBlocks[block2.height]})
+         THEN RemoveManyPeers({bPool.receivedBlocks[block1.height], bPool.receivedBlocks[block2.height]}, bPool)
          ELSE  \* all good, execute block at position height
             [bPool EXCEPT !.height = bPool.height + 1]
               
@@ -414,7 +413,7 @@ TryPrunePeer(bPool, nonDetSet) ==
         THEN toRemovePeers \union {nextHeightPeer} 
         ELSE toRemovePeers
     IN
-    RemovePeers(prunablePeers, bPool)
+    RemoveManyPeers(prunablePeers, bPool)
     
 
 \* Handle SyncTimeout. It models if progress has been made (height has increased) since the last SyncTimeout event.
@@ -425,19 +424,19 @@ HandleSyncTimeout(bPool) ==
     ]      
 
 HandleResponse(msg, bPool) == 
-    IF msg.type = "blockResponse" THEN 
-      HandleBlockResponse(msg, bPool) 
-    ELSE IF msg.type = "statusResponse" THEN 
-      HandleStatusResponse(msg, bPool) 
-    ELSE IF msg.type = "addPeer" THEN 
-      AddPeer(msg.peerId, bPool) 
-    ELSE IF msg.type = "removePeer" THEN 
-      RemovePeer(msg.peerId, bPool)  
-    ELSE IF msg.type = "syncTimeout" THEN 
+    IF msg.type = "blockResponse" THEN
+      HandleBlockResponse(msg, bPool)
+    ELSE IF msg.type = "statusResponse" THEN
+      HandleStatusResponse(msg, bPool)
+    ELSE IF msg.type = "addPeer" THEN
+      AddPeer(msg.peerId, bPool)
+    ELSE IF msg.type = "removePeer" THEN
+      RemovePeer(msg.peerId, bPool)
+    ELSE IF msg.type = "syncTimeout" THEN
       HandleSyncTimeout(bPool)
-    ELSE 
+    ELSE
       bPool
-    
+
     
 (*
    At every node step we executed the following steps (atomically):
@@ -645,8 +644,8 @@ MaxCorrectPeerHeight(bPool) ==
     IF correctPeers = {}
     THEN 0 \* no peers, just return 0
     ELSE LET Hts == {bPool.peerHeights[p] : p \in correctPeers} IN
-            CHOOSE max \in Hts: \A h \in Hts: h <= max 
-    
+            CHOOSE max \in Hts: \A h \in Hts: h <= max
+
               
 Correctness1 == state = "finished" => 
     blockPool.height >= MaxCorrectPeerHeight(blockPool)
@@ -673,5 +672,6 @@ StateNotFinished ==
           
 \*=============================================================================
 \* Modification History
+\* Last modified Tue Apr 07 23:49:10 CEST 2020 by igor
 \* Last modified Tue Apr 07 16:36:30 CEST 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
