@@ -355,8 +355,8 @@ CreateRequest(bPool) ==
         
 
 \* Returns node state, i.e., defines termination condition. 
-GetState(bPool) == 
-    IF bPool.syncedBlocks = 0 /\ bPool.syncHeight /= 1 \* corresponds to the syncTimeout in case no progress has been made for a period of time.
+ComputeNextState(bPool) == 
+    IF bPool.syncedBlocks = 0  \* corresponds to the syncTimeout in case no progress has been made for a period of time.
     THEN "finished"
     ELSE IF /\ bPool.height > 1 
             /\ bPool.height >= MaxPeerHeight(bPool) \* see https://github.com/tendermint/tendermint/blob/61057a8b0af2beadee106e47c4616b279e83c920/blockchain/v2/scheduler.go#L566
@@ -614,6 +614,13 @@ FlipTurn ==
  ) 
         
  
+\* Compute max peer height. Used as a helper operator in properties.
+MaxCorrectPeerHeight(bPool) == 
+    LET correctPeers == {p \in bPool.peerIds: p \in CORRECT} IN
+    IF correctPeers = {}
+    THEN 0 \* no peers, just return 0
+    ELSE LET Hts == {bPool.peerHeights[p] : p \in correctPeers} IN
+            CHOOSE max \in Hts: \A h \in Hts: h <= max
 
 \* properties to check
 TypeOK ==
@@ -636,17 +643,7 @@ TypeOK ==
                 syncedBlocks: Heights,
                 syncHeight: Heights
            ] 
-           
-
-\* Compute max peer height.
-MaxCorrectPeerHeight(bPool) == 
-    LET correctPeers == {p \in bPool.peerIds: p \in CORRECT} IN
-    IF correctPeers = {}
-    THEN 0 \* no peers, just return 0
-    ELSE LET Hts == {bPool.peerHeights[p] : p \in correctPeers} IN
-            CHOOSE max \in Hts: \A h \in Hts: h <= max
-
-              
+                         
 Correctness1 == state = "finished" => 
     blockPool.height >= MaxCorrectPeerHeight(blockPool)
 
@@ -672,6 +669,6 @@ StateNotFinished ==
           
 \*=============================================================================
 \* Modification History
+\* Last modified Wed Apr 08 17:02:14 CEST 2020 by zarkomilosevic
 \* Last modified Tue Apr 07 23:49:10 CEST 2020 by igor
-\* Last modified Tue Apr 07 16:36:30 CEST 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
