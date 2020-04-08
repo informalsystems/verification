@@ -20,7 +20,7 @@ communicate by message passing.
     - the node (state machine) that is doing fastsync and 
     - the environment with which node interacts.
 
-The environment constists of the set of (correct and faulty) peers with
+The environment consists of the set of (correct and faulty) peers with
 which node interacts as part of fast sync protocol, but also contains some 
 aspects (adding/removing peers, timeout mechanism) that are part of the node
 local environment (could be seen as part of the runtime in which node
@@ -33,7 +33,7 @@ As part of the fast sync protocols node and the peers exchange the following mes
 - BlockRequest
 - BlockReply
 
-A node is peridically issuing StatusRequets to query peers for their current height (to decide what 
+A node is periodically issuing StatusRequests to query peers for their current height (to decide what
 blocks to ask from what peers). Based on StatusReplies (that are sent by peers), the node queries 
 blocks for some height(s) by sending them BlockRequest messages. A peer provides asked block by
 BlockResponse message. In addition to those messages, a node in this spec receives additional
@@ -183,7 +183,7 @@ InitNode ==
                 blockStore |-> [h \in HeightsPlus |-> NilBlock],        
                 receivedBlocks |-> [h \in Heights |-> NilPeer],         
                 pendingBlocks |-> [h \in Heights |-> NilPeer],
-                syncedBlocks |-> 0,
+                syncedBlocks |-> -1,
                 syncHeight |-> 1
            ]
        /\ state = "running" 
@@ -290,9 +290,8 @@ HandleBlockResponse(msg, bPool) ==
 MaxPeerHeight(bPool) == 
     IF bPool.peerIds = {}
     THEN 0 \* no peers, just return 0
-    ELSE CHOOSE max \in { bPool.peerHeights[p] : p \in bPool.peerIds }:
-            \A p \in bPool.peerIds: bPool.peerHeights[p] <= max \* max is the maximum
-    
+    ELSE LET Hts == {bPool.peerHeights[p] : p \in bPool.peerIds} IN
+           CHOOSE max \in Hts: \A h \in Hts: h <= max 
 
 (* Returns next height for which request should be sent.
    Returns NilHeight in case there is no height for which request can be sent.  *)
@@ -357,8 +356,8 @@ CreateRequest(bPool) ==
         
 
 \* Returns node state, i.e., defines termination condition. 
-GetState(bPool) == 
-    IF bPool.syncedBlocks = 0 /\ bPool.syncHeight /= 1 \* corresponds to the syncTimeout in case no progress has been made for a period of time.
+ComputeNextState(bPool) == 
+    IF bPool.syncedBlocks = 0    \* corresponds to the syncTimeout in case no progress has been made for a period of time.
     THEN "finished"
     ELSE IF /\ bPool.height > 1 
             /\ bPool.height >= MaxPeerHeight(bPool) \* see https://github.com/tendermint/tendermint/blob/61057a8b0af2beadee106e47c4616b279e83c920/blockchain/v2/scheduler.go#L566
@@ -425,25 +424,20 @@ HandleSyncTimeout(bPool) ==
             !.syncHeight = bPool.height
     ]      
 
-
-\* Handle control messages.
-HandleControlMsg(msg, bPool) == 
-    IF msg.type = "statusResponse" 
-    THEN HandleStatusResponse(msg, bPool)
-    ELSE IF msg.type = "addPeer" 
-         THEN AddPeer(msg.peerId, bPool)
-         ELSE IF msg.type = "removePeer"
-         THEN RemovePeer(msg.peerId, bPool)  
-         ELSE IF msg.type = "syncTimeout"
-              THEN HandleSyncTimeout(bPool)  
-              ELSE bPool 
-
 HandleResponse(msg, bPool) == 
-    IF msg = NoMsg 
-    THEN bPool
-    ELSE IF msg.type = "blockResponse" 
-         THEN HandleBlockResponse(msg, bPool) 
-         ELSE HandleControlMsg(msg, bPool)  
+    IF msg.type = "blockResponse" THEN 
+      HandleBlockResponse(msg, bPool) 
+    ELSE IF msg.type = "statusResponse" THEN 
+      HandleStatusResponse(msg, bPool) 
+    ELSE IF msg.type = "addPeer" THEN 
+      AddPeer(msg.peerId, bPool) 
+    ELSE IF msg.type = "removePeer" THEN 
+      RemovePeer(msg.peerId, bPool)  
+    ELSE IF msg.type = "syncTimeout" THEN 
+      HandleSyncTimeout(bPool)
+    ELSE 
+      bPool
+    
     
 (*
    At every node step we executed the following steps (atomically):
@@ -459,7 +453,7 @@ NodeStep ==
         LET bp == TryPrunePeer(bPool, nonDetSet) IN
         LET nbPool == ExecuteBlocks(bp) IN
         LET msgAndPool == CreateRequest(nbPool) IN 
-        LET nstate == GetState(msgAndPool.pool) IN
+        LET nstate == ComputeNextState(msgAndPool.pool) IN
    
         /\ state' = nstate
         /\ blockPool' = msgAndPool.pool
@@ -650,9 +644,9 @@ MaxCorrectPeerHeight(bPool) ==
     LET correctPeers == {p \in bPool.peerIds: p \in CORRECT} IN
     IF correctPeers = {}
     THEN 0 \* no peers, just return 0
-    ELSE CHOOSE max \in { bPool.peerHeights[p] : p \in correctPeers }:
-            \A p \in correctPeers: bPool.peerHeights[p] <= max \* max is the maximum
-
+    ELSE LET Hts == {bPool.peerHeights[p] : p \in correctPeers} IN
+            CHOOSE max \in Hts: \A h \in Hts: h <= max 
+    
               
 Correctness1 == state = "finished" => 
     blockPool.height >= MaxCorrectPeerHeight(blockPool)
@@ -679,5 +673,5 @@ StateNotFinished ==
           
 \*=============================================================================
 \* Modification History
-\* Last modified Tue Apr 07 15:58:26 CEST 2020 by zarkomilosevic
+\* Last modified Tue Apr 07 16:36:30 CEST 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
