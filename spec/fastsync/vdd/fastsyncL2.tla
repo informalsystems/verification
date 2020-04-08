@@ -91,6 +91,8 @@ NilCommit == [blockId |-> 0, enoughVotingPower |-> TRUE]
 
 Blocks == [height: Heights, lastCommit: LastCommits, wellFormed: BOOLEAN]
 
+BlocksWithNil == [height: Heights, lastCommit: LastCommits \union {NilCommit}, wellFormed: BOOLEAN]
+
 \* correct node will create always valid blocks, i.e., wellFormed = true and lastCommit is correct. 
 CorrectBlock(h) == [height |-> h, lastCommit |-> CorrectLastCommit(h), wellFormed |-> TRUE]
 
@@ -157,7 +159,7 @@ ControlMsgs ==
 InMsgs ==
     {NoMsg}
         \union
-    [type: {"blockResponse"}, peerId: AllPeerIds, block: Blocks]
+    [type: {"blockResponse"}, peerId: AllPeerIds, block: BlocksWithNil]
         \union
     [type: {"statusResponse"}, peerId: AllPeerIds, height: Heights]
         \union
@@ -180,7 +182,7 @@ InitNode ==
                 height |-> 1,
                 peerIds |-> pIds, 
                 peerHeights |-> [p \in AllPeerIds |-> NilHeight],     \* no peer height is known
-                blockStore |-> [h \in HeightsPlus |-> NilBlock],        
+                blockStore |-> [h \in Heights |-> NilBlock],        
                 receivedBlocks |-> [h \in Heights |-> NilPeer],         
                 pendingBlocks |-> [h \in Heights |-> NilPeer],
                 syncedBlocks |-> -1,
@@ -516,12 +518,11 @@ CreateBlockResponse(msg, pState, anyBlock) ==
         ] IN
     [msg |-> m, peers |-> npState]   
          
-GrowBlockchain(pState) == 
-    LET newPeerState == 
-        [pState EXCEPT !.peerHeights = [p \in AllPeerIds |-> pState.peerHeights[p] + 1]] 
-    IN
-    /\ peersState' = newPeerState
-    /\ inMsg' = NoMsg        
+GrowBlockchain(pState) ==
+    \E p \in AllPeerIds:
+        /\ pState.peerHeights[p] < MAX_HEIGHT
+        /\ peersState' = [pState EXCEPT !.peerHeights[p] = @ + 1]
+        /\ inMsg' = NoMsg        
 
 
 SendStatusResponseMessage(pState) == 
@@ -625,24 +626,28 @@ MaxCorrectPeerHeight(bPool) ==
 \* properties to check
 TypeOK ==
     /\ state \in States
-    /\ inMsg \in InMsgs 
+    /\ inMsg \in InMsgs
     /\ outMsg \in OutMsgs
     /\ turn \in {"Peers", "Node"}
     /\ peersState \in [
          peerHeights: [AllPeerIds -> Heights \union {NilHeight}],
          statusRequested: BOOLEAN,
-         blocksRequested: SUBSET [type: {"blockResponse"}, peerId: AllPeerIds, block: Blocks]
+         blocksRequested:
+            SUBSET
+               ([type: {"blockRequest"}, peerId: AllPeerIds, height: Heights]
+                  \union
+                [type: {"blockResponse"}, peerId: AllPeerIds, block: Blocks])
         ]
     /\ blockPool \in [
                 height: Heights,
                 peerIds: SUBSET AllPeerIds, 
                 peerHeights: [AllPeerIds -> Heights \union {NilHeight}],     
-                blockStore: [HeightsPlus -> Blocks \union {NilBlock}],
+                blockStore: [Heights -> BlocksWithNil \union {NilBlock}],
                 receivedBlocks: [Heights -> AllPeerIds \union {NilPeer}],
                 pendingBlocks: [Heights -> AllPeerIds \union {NilPeer}],
-                syncedBlocks: Heights,
+                syncedBlocks: Heights \union {NilHeight, -1},
                 syncHeight: Heights
-           ] 
+           ]
                          
 Correctness1 == state = "finished" => 
     blockPool.height >= MaxCorrectPeerHeight(blockPool)
@@ -669,6 +674,6 @@ StateNotFinished ==
           
 \*=============================================================================
 \* Modification History
+\* Last modified Wed Apr 08 21:33:48 CEST 2020 by igor
 \* Last modified Wed Apr 08 17:02:14 CEST 2020 by zarkomilosevic
-\* Last modified Tue Apr 07 23:49:10 CEST 2020 by igor
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
