@@ -633,11 +633,8 @@ TypeOK ==
          peerHeights: [AllPeerIds -> Heights \union {NilHeight}],
          statusRequested: BOOLEAN,
          blocksRequested:
-            SUBSET
-               ([type: {"blockRequest"}, peerId: AllPeerIds, height: Heights]
-                  \union
-                [type: {"blockResponse"}, peerId: AllPeerIds, block: Blocks])
-        ]
+            SUBSET [type: {"blockRequest"}, peerId: AllPeerIds, height: Heights]
+       ]
     /\ blockPool \in [
                 height: Heights,
                 peerIds: SUBSET AllPeerIds, 
@@ -674,6 +671,6 @@ StateNotFinished ==
           
 \*=============================================================================
 \* Modification History
-\* Last modified Wed Apr 08 21:33:48 CEST 2020 by igor
+\* Last modified Thu Apr 09 12:53:53 CEST 2020 by igor
 \* Last modified Wed Apr 08 17:02:14 CEST 2020 by zarkomilosevic
 \* Created Tue Feb 04 10:36:18 CET 2020 by zarkomilosevic
