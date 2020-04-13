@@ -10,6 +10,10 @@ Run with:
     - TypeOK
  - Properties:
     - TerminationWhenNoAdvance
-    - GoodTermination
-    - TougherTermination
+    - TerminationGoodPeers
+    - TerminationAllCases
+ - Proofs that properties are not vacuously true:
+    - TerminationGoodPeersPre
+    - TerminationAllCases
+    - SchedulerIncreasePre
 

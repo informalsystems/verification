@@ -567,7 +567,8 @@ TerminationGoodPeers ==
  )
     => <>(outEvent.type = "scFinishedEv" /\ AllRequiredBlocksProcessed)
 
-\* Make sure that the precondition is not always FALSE.
+(* This property is violated. It shows that the precondition of TerminationGoodPeers is not      *)
+(* always FALSE                                                                                  *)
 TerminationGoodPeersPre ==
  (/\ scheduler.height < ultimateHeight
   /\ <>[]GoodResponse
@@ -584,19 +585,20 @@ TerminationAllCases ==
  )
     => <>(outEvent.type = "scFinishedEv" /\ (AllRequiredBlocksProcessed \/ outEvent.error = "timeout"))
 
-\* Make sure that the precondition is not always FALSE.
+(* This property is violated. It shows that the precondition of TerminationAllCases is not       *)
+(* always FALSE                                                                                  *)
 TerminationAllCasesPre ==
  (/\ scheduler.height < ultimateHeight
   /\(([]<> (<<IncreaseHeight>>_<<scheduler, turn>>)) \/ <>(inEvent.type = "tNoAdvanceExp"))
  )
     => FALSE
 
-\* This will give an example of increasing heights in the scheduler
+(* This property is violated. TLC output shows an example of increasing heights in the scheduler *)
 SchedulerIncreasePre ==
 []<>(<<IncreaseHeight>>_<<scheduler, turn>>)
     => FALSE
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Apr 03 15:22:58 CEST 2020 by ancaz
+\* Last modified Mon Apr 13 13:14:32 CEST 2020 by ancaz
 \* Created Sat Feb 08 13:12:30 CET 2020 by ancaz
