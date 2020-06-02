@@ -36,9 +36,14 @@ For both specifications, we express two invariants:
 
 The TLA+ specification [FastsyncConcurrencyBoundedBlocking.tla](FastsyncConcurrencyBoundedBlocking.tla) violates the invariant `GoodState`: a state where all bounded and blocking buffers are full, and all inbound messages are different than `noMsg` is reachable even in the case with only one peer, where the length of the buffers (defined by the constant `BufferMaxLen`) is 1. 
 
-The TLA+ specification [FastsyncConcurrencyBoundedBlocking.tla](FastsyncConcurrency.tla) captures the concurrent commuication scenario currently implemented in the [reference Go code](https://github.com/tendermint/tendermint/tree/master/blockchain/v2). 
-As in this case, we need to deal with unbounded queues, in order to be able to run TLC, we bound the length of the unbounded queues using the constant `UnboundedBufferMaxLen`.
-The length of the bounded queues is given by the constant `BoundedBufferMaxLen`, and we assume that 
+The TLA+ specification [FastsyncConcurrency.tla](FastsyncConcurrency.tla) 
+captures the concurrent commuication scenario currently implemented 
+in the [reference Go code](https://github.com/tendermint/tendermint/tree/master/blockchain/v2). 
+As in this case, we need to deal with unbounded queues, in order to 
+be able to run TLC, we bound the length of the unbounded queues 
+using the constant `UnboundedBufferMaxLen`.
+The length of the bounded queues is given by the constant 
+`BoundedBufferMaxLen`, and we assume that 
 `BoundedBufferMaxLen <= UnboundedBufferMaxLen`.
 
 To import the specifications in the TLA+ toolbox and run TLC:
@@ -46,5 +51,6 @@ To import the specifications in the TLA+ toolbox and run TLC:
 - create a model
 - assign values to the constants 
 - choose "Temporal formula" as the behavior spec, and use the formula `Spec`
-- add the invariant `Inv` (a conjunction of all the defined invariants)
+- add the invariant `Inv` (a conjunction of all the defined invariants 
+in the specification, i.e., `TypeOK` and `GoodState`)
 - run TLC on the model  
